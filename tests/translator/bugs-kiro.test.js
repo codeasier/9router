@@ -7,9 +7,8 @@ import { FORMATS } from "../../open-sse/translator/formats.js";
 const O2K = (body) => translateRequest(FORMATS.OPENAI, FORMATS.KIRO, "m", body, true, null, "kiro");
 
 describe("OpenAI → Kiro", () => {
-  // openai-to-kiro.js:214-216 — JSON.parse(arguments) without try/catch → throws on bad JSON
-  // KNOWN BUG (severe: throws and breaks the whole request)
-  it.fails("malformed tool arguments do not throw the whole request", () => {
+  // openai-to-kiro.js — safeJSONParse guards bad tool-call JSON (fixed in PR #1582)
+  it("malformed tool arguments do not throw the whole request", () => {
     expect(() =>
       O2K({
         messages: [

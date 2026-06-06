@@ -53,9 +53,9 @@ const CAVEMAN_LEVELS = [
   { id: "lite", label: "Lite", desc: "Drop filler, keep grammar" },
   { id: "full", label: "Full", desc: "Drop articles, fragments OK" },
   { id: "ultra", label: "Ultra", desc: "Telegraphic, max compression" },
-  { id: "wenyan-lite", label: "文 Lite", desc: "Classical Chinese, light compression" },
-  { id: "wenyan", label: "文 Full", desc: "Maximum 文言文, 80-90% reduction" },
-  { id: "wenyan-ultra", label: "文 Ultra", desc: "Extreme classical compression" },
+  { id: "wenyan-lite", label: "Zip Lite", desc: "Compact classical style, light compression" },
+  { id: "wenyan", label: "Zip Full", desc: "Classical Chinese, 80-90% token reduction" },
+  { id: "wenyan-ultra", label: "Zip Max", desc: "Extreme classical compression" },
 ];
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
@@ -1078,21 +1078,26 @@ export default function APIPageClient({ machineId }) {
           </div>
           <div className="flex items-center gap-3 shrink-0">
             {cavemanEnabled && (
-              <div className="flex items-center gap-1.5">
-                {CAVEMAN_LEVELS.map((lvl) => (
-                  <button
-                    key={lvl.id}
-                    onClick={() => handleCavemanLevel(lvl.id)}
-                    className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${
-                      cavemanLevel === lvl.id
-                        ? "bg-primary text-white border-primary"
-                        : "bg-transparent border-border text-text-muted hover:bg-surface-2"
-                    }`}
-                    title={lvl.desc}
-                  >
-                    {lvl.label}
-                  </button>
-                ))}
+              <div className="flex flex-col items-end gap-1">
+                <div className="flex items-center gap-1.5">
+                  {CAVEMAN_LEVELS.map((lvl) => (
+                    <button
+                      key={lvl.id}
+                      onClick={() => handleCavemanLevel(lvl.id)}
+                      className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${
+                        cavemanLevel === lvl.id
+                          ? "bg-primary text-white border-primary"
+                          : "bg-transparent border-border text-text-muted hover:bg-surface-2"
+                      }`}
+                      title={lvl.desc}
+                    >
+                      {lvl.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-primary">
+                  {CAVEMAN_LEVELS.find((lvl) => lvl.id === cavemanLevel)?.desc}
+                </p>
               </div>
             )}
             <Toggle
