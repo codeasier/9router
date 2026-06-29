@@ -55,7 +55,8 @@ describe("AUDIT-002: API key masking", () => {
     );
     // Internal aggregation keys need stable identity without exposing raw API keys.
     expect(source).toContain("function fingerprintApiKey");
-    expect(source).toContain("getApiKeyStatsKey(r.apiKey, r.model, r.provider)");
+    expect(source).toContain("const apiKeyFingerprint = fingerprintApiKey(r.apiKey)");
+    expect(source).toContain("${apiKeyFingerprint}|${r.model}|${r.provider");
     // Should NOT use raw r.apiKey directly in the aggregation key template.
     expect(source).not.toContain("${r.apiKey}|${r.model}|${r.provider");
   });
