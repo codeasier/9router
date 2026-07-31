@@ -3,6 +3,7 @@
  */
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
+import { CODEX_RESET_CREDIT_REQUEST_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { U, parseResetTime, toFiniteNumber } from "./shared.js";
 
 // Codex (OpenAI) API config
@@ -21,8 +22,8 @@ function toIsoDate(value) {
   return Number.isFinite(time) ? date.toISOString() : null;
 }
 
-function getCodexAccountId(providerSpecificData) {
-  return providerSpecificData?.workspaceId || providerSpecificData?.accountId || providerSpecificData?.chatgptAccountId || null;
+export function getCodexAccountIdentity(providerSpecificData) {
+  return providerSpecificData?.workspaceId || providerSpecificData?.chatgptAccountId || providerSpecificData?.accountId || null;
 }
 
 function getCodexRateLimitBody(snapshot) {
@@ -120,7 +121,7 @@ export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = 
     throw new Error("No Codex access token available. Please re-authorize the connection.");
   }
 
-  const accountId = getCodexAccountId(providerSpecificData);
+  const accountId = getCodexAccountIdentity(providerSpecificData);
   const headers = {
     "Authorization": `Bearer ${accessToken}`,
     "Accept": "application/json",
@@ -132,6 +133,7 @@ export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = 
   const response = await proxyAwareFetch(CODEX_CONFIG.resetCreditsUrl, {
     method: "GET",
     headers,
+    signal: AbortSignal.timeout(CODEX_RESET_CREDIT_REQUEST_TIMEOUT_MS),
   }, proxyOptions);
 
   let data = null;
@@ -143,13 +145,16 @@ export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = 
 
   if (!response.ok) {
     const message = data?.message || data?.error || data?.detail || `Codex reset credits API unavailable (${response.status}).`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
 
   const credits = Array.isArray(data?.credits) ? data.credits : [];
   return {
     availableCount: Math.max(0, toFiniteNumber(data?.available_count ?? data?.availableCount, 0)),
     credits: credits.map((credit) => ({
+      id: credit?.id || credit?.credit_id || credit?.creditId || null,
       status: String(credit?.status || "unknown"),
       grantedAt: toIsoDate(credit?.granted_at ?? credit?.grantedAt),
       expiresAt: toIsoDate(credit?.expires_at ?? credit?.expiresAt),
@@ -158,7 +163,7 @@ export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = 
 }
 
 // Consume one Codex rate-limit reset credit (irreversible, spends 1 credit)
-export async function consumeCodexRateLimitResetCredit(accessToken, redeemRequestId, proxyOptions = null) {
+export async function consumeCodexRateLimitResetCredit(accessToken, redeemRequestId, proxyOptions = null, providerSpecificData = null) {
   if (!accessToken) {
     throw new Error("No Codex access token available. Please re-authorize the connection.");
   }
@@ -169,14 +174,19 @@ export async function consumeCodexRateLimitResetCredit(accessToken, redeemReques
   let response;
   let data = null;
   try {
+    const headers = {
+      "Authorization": `Bearer ${accessToken}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    };
+    const accountId = getCodexAccountIdentity(providerSpecificData);
+    if (accountId) headers["ChatGPT-Account-ID"] = accountId;
+
     response = await proxyAwareFetch(CODEX_CONFIG.resetCreditsConsumeUrl, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify({ redeem_request_id: redeemRequestId }),
+      signal: AbortSignal.timeout(CODEX_RESET_CREDIT_REQUEST_TIMEOUT_MS),
     }, proxyOptions);
 
     const text = await response.text();

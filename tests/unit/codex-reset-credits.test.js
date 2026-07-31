@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => ({
   refreshAndUpdateCredentials: vi.fn(),
   getCodexRateLimitResetCredits: vi.fn(),
   consumeCodexRateLimitResetCredit: vi.fn(),
+  getActiveCodexResetCreditAttempt: vi.fn(),
+  getLatestCodexResetCreditAttempt: vi.fn(),
+  createCodexResetCreditAttempt: vi.fn(),
+  updateCodexResetCreditAttempt: vi.fn(),
 }));
 
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
@@ -17,6 +21,12 @@ vi.mock("open-sse/index.js", () => ({}));
 
 vi.mock("@/lib/localDb", () => ({
   getProviderConnectionById: mocks.getProviderConnectionById,
+  getProviderConnections: vi.fn(),
+  getSettings: vi.fn(),
+  getActiveCodexResetCreditAttempt: mocks.getActiveCodexResetCreditAttempt,
+  getLatestCodexResetCreditAttempt: mocks.getLatestCodexResetCreditAttempt,
+  createCodexResetCreditAttempt: mocks.createCodexResetCreditAttempt,
+  updateCodexResetCreditAttempt: mocks.updateCodexResetCreditAttempt,
 }));
 
 vi.mock("@/lib/network/connectionProxy", () => ({
@@ -37,6 +47,21 @@ describe("Codex reset credits", () => {
     vi.resetModules();
     vi.clearAllMocks();
     mocks.resolveConnectionProxyConfig.mockResolvedValue({});
+    mocks.getActiveCodexResetCreditAttempt.mockResolvedValue(null);
+    mocks.getLatestCodexResetCreditAttempt.mockResolvedValue(null);
+    mocks.createCodexResetCreditAttempt.mockImplementation(async (attempt) => attempt);
+    mocks.updateCodexResetCreditAttempt.mockImplementation(async (_id, updates) => updates);
+    mocks.getCodexRateLimitResetCredits.mockResolvedValue({
+      availableCount: 1,
+      credits: [{ id: "credit-1", status: "available", expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() }],
+    });
+  });
+
+  it("uses workspaceId then chatgptAccountId then accountId as canonical identity", async () => {
+    const { getCodexAccountIdentity } = await import("../../open-sse/services/usage/codex.js");
+    expect(getCodexAccountIdentity({ workspaceId: "workspace", chatgptAccountId: "chatgpt", accountId: "account" })).toBe("workspace");
+    expect(getCodexAccountIdentity({ chatgptAccountId: "chatgpt", accountId: "account" })).toBe("chatgpt");
+    expect(getCodexAccountIdentity({ accountId: "account" })).toBe("account");
   });
 
   it("returns normalized reset credit expiry details", async () => {
@@ -78,17 +103,49 @@ describe("Codex reset credits", () => {
       availableCount: 2,
       credits: [
         {
+          id: null,
           status: "available",
           grantedAt: "2026-06-18T00:25:18.000Z",
           expiresAt: "2026-07-18T00:25:18.000Z",
         },
         {
+          id: null,
           status: "redeemed",
           grantedAt: null,
           expiresAt: null,
         },
       ],
     });
+  });
+
+  it("consumes a reset credit in the same Codex workspace used for expiry details", async () => {
+    mocks.proxyAwareFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ code: "reset", windows_reset: 1 }),
+    });
+
+    const { consumeCodexRateLimitResetCredit } = await import("../../open-sse/services/usage/codex.js");
+    const result = await consumeCodexRateLimitResetCredit(
+      "token",
+      "redeem-1",
+      { strictProxy: false },
+      { workspaceId: "acct_123" },
+    );
+
+    expect(mocks.proxyAwareFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/rate-limit-reset-credits/consume"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer token",
+          "ChatGPT-Account-ID": "acct_123",
+        }),
+        body: JSON.stringify({ redeem_request_id: "redeem-1" }),
+      }),
+      { strictProxy: false },
+    );
+    expect(result).toMatchObject({ ok: true, code: "reset", windowsReset: 1 });
   });
 
   it("GET refreshes OAuth credentials before returning reset credit details", async () => {
@@ -193,6 +250,113 @@ describe("Codex reset credits", () => {
       "token",
       expect.any(String),
       expect.objectContaining({ strictProxy: false }),
+      {},
     );
+  });
+
+  it("auto-use does not consume when the earliest available credit is outside the threshold", async () => {
+    const now = Date.now();
+    mocks.getProviderConnectionById.mockResolvedValue({
+      id: "conn_1",
+      provider: "codex",
+      authType: "access_token",
+      accessToken: "token",
+      providerSpecificData: { workspaceId: "acct_auto_not_due" },
+    });
+    mocks.getCodexRateLimitResetCredits.mockResolvedValue({
+      availableCount: 1,
+      credits: [{ status: "available", expiresAt: new Date(now + 11 * 60 * 1000).toISOString() }],
+    });
+
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/api/usage/conn_1/codex-reset-credits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoUseBeforeExpiryMinutes: 10 }),
+    }), { params: Promise.resolve({ connectionId: "conn_1" }) });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ code: "not_due", reset: false, auto: true });
+    expect(mocks.consumeCodexRateLimitResetCredit).not.toHaveBeenCalled();
+  });
+
+  it("auto-use consumes when the earliest available credit expires within the threshold", async () => {
+    const now = Date.now();
+    const providerSpecificData = { workspaceId: "acct_123" };
+    mocks.getProviderConnectionById.mockResolvedValue({
+      id: "conn_auto_due",
+      provider: "codex",
+      authType: "access_token",
+      accessToken: "token",
+      providerSpecificData,
+    });
+    mocks.getCodexRateLimitResetCredits.mockResolvedValue({
+      availableCount: 2,
+      credits: [
+        { status: "redeemed", expiresAt: new Date(now + 60 * 1000).toISOString() },
+        { status: "available", grantedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 9 * 60 * 1000).toISOString() },
+        { status: "available", expiresAt: new Date(now + 5 * 60 * 1000).toISOString() },
+      ],
+    });
+    mocks.consumeCodexRateLimitResetCredit.mockResolvedValue({
+      ok: true,
+      noCredit: false,
+      status: 200,
+      code: "reset",
+      windowsReset: 1,
+      raw: {},
+    });
+
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/api/usage/conn_auto_due/codex-reset-credits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoUseBeforeExpiryMinutes: 10 }),
+    }), { params: Promise.resolve({ connectionId: "conn_auto_due" }) });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ code: "reset", reset: true, windows_reset: 1 });
+    expect(mocks.consumeCodexRateLimitResetCredit).toHaveBeenCalledWith(
+      "token",
+      expect.any(String),
+      expect.objectContaining({ strictProxy: false }),
+      providerSpecificData,
+    );
+  });
+
+  it("rejects an invalid auto-use threshold", async () => {
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/api/usage/conn_1/codex-reset-credits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoUseBeforeExpiryMinutes: 0 }),
+    }), { params: Promise.resolve({ connectionId: "conn_1" }) });
+
+    expect(response.status).toBe(400);
+    expect(mocks.getProviderConnectionById).not.toHaveBeenCalled();
+  });
+
+  it("rejects a present nonnumeric auto-use threshold instead of consuming manually", async () => {
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/api/usage/conn_1/codex-reset-credits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoUseBeforeExpiryMinutes: "abc" }),
+    }), { params: Promise.resolve({ connectionId: "conn_1" }) });
+
+    expect(response.status).toBe(400);
+    expect(mocks.consumeCodexRateLimitResetCredit).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed JSON instead of consuming manually", async () => {
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/api/usage/conn_1/codex-reset-credits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{bad-json",
+    }), { params: Promise.resolve({ connectionId: "conn_1" }) });
+
+    expect(response.status).toBe(400);
+    expect(mocks.consumeCodexRateLimitResetCredit).not.toHaveBeenCalled();
   });
 });
