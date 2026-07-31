@@ -1,4 +1,8 @@
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
+export {
+  DEFAULT_CODEX_RESET_AUTO_USE_MINUTES,
+  normalizeCodexResetAutoUseMinutes,
+} from "@/shared/services/codexResetCreditUtils.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 export const QUOTA_CACHE_KEY = "quotaCacheData";
@@ -7,7 +11,6 @@ export const REFRESH_INTERVAL_MS = 60000;
 export const CLAUDE_REFRESH_INTERVAL_MS = 180000;
 export const DEPLETED_QUOTA_THRESHOLD = 5;
 export const AUTO_REFRESH_STORAGE_KEY = "quotaAutoRefresh";
-export const DEFAULT_CODEX_RESET_AUTO_USE_MINUTES = 10;
 export const CONNECTIONS_PAGE_SIZE = 20;
 export const ACCOUNT_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 export const ACCOUNT_PAGE_SIZE_MAX = 500;
@@ -21,12 +24,6 @@ export const QUOTA_SORT_OPTIONS = [
   { value: "remaining-asc", label: "% quota: low to high" },
   { value: "remaining-desc", label: "% quota: high to low" },
 ];
-
-export function normalizeCodexResetAutoUseMinutes(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.min(10080, Math.max(1, Math.round(parsed)));
-}
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 export function getConnectionLabel(connection) {

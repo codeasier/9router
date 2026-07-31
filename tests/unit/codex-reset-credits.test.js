@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   getLatestCodexResetCreditAttempt: vi.fn(),
   createCodexResetCreditAttempt: vi.fn(),
   updateCodexResetCreditAttempt: vi.fn(),
+  getSettings: vi.fn(),
 }));
 
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
@@ -22,7 +23,7 @@ vi.mock("open-sse/index.js", () => ({}));
 vi.mock("@/lib/localDb", () => ({
   getProviderConnectionById: mocks.getProviderConnectionById,
   getProviderConnections: vi.fn(),
-  getSettings: vi.fn(),
+  getSettings: mocks.getSettings,
   getActiveCodexResetCreditAttempt: mocks.getActiveCodexResetCreditAttempt,
   getLatestCodexResetCreditAttempt: mocks.getLatestCodexResetCreditAttempt,
   createCodexResetCreditAttempt: mocks.createCodexResetCreditAttempt,
@@ -49,6 +50,7 @@ describe("Codex reset credits", () => {
     mocks.resolveConnectionProxyConfig.mockResolvedValue({});
     mocks.getActiveCodexResetCreditAttempt.mockResolvedValue(null);
     mocks.getLatestCodexResetCreditAttempt.mockResolvedValue(null);
+    mocks.getSettings.mockResolvedValue({ codexResetCreditAutoUseMinutes: 10 });
     mocks.createCodexResetCreditAttempt.mockImplementation(async (attempt) => attempt);
     mocks.updateCodexResetCreditAttempt.mockImplementation(async (_id, updates) => updates);
     mocks.getCodexRateLimitResetCredits.mockResolvedValue({
@@ -218,6 +220,27 @@ describe("Codex reset credits", () => {
     expect(mocks.getCodexRateLimitResetCredits).toHaveBeenNthCalledWith(2, "forced-token", expect.any(Object), {});
   });
 
+  it("GET preserves the 401 response when proactive OAuth refresh fails", async () => {
+    mocks.getProviderConnectionById.mockResolvedValue({
+      id: "conn_refresh_failed",
+      provider: "codex",
+      authType: "oauth",
+      accessToken: "old-token",
+      refreshToken: "refresh-token",
+      providerSpecificData: {},
+    });
+    mocks.refreshAndUpdateCredentials.mockRejectedValue(new Error("Credential refresh failed"));
+
+    const { GET } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await GET(new Request("http://localhost/api/usage/conn_refresh_failed/codex-reset-credits"), {
+      params: Promise.resolve({ connectionId: "conn_refresh_failed" }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Credential refresh failed" });
+    expect(mocks.getCodexRateLimitResetCredits).not.toHaveBeenCalled();
+  });
+
   it("POST returns 409 when there are no reset credits to consume", async () => {
     mocks.getProviderConnectionById.mockResolvedValue({
       id: "conn_1",
@@ -322,6 +345,57 @@ describe("Codex reset credits", () => {
       expect.objectContaining({ strictProxy: false }),
       providerSpecificData,
     );
+  });
+
+  it("does not let an auto-use POST bypass the disabled server setting", async () => {
+    mocks.getSettings.mockResolvedValue({ codexResetCreditAutoUseMinutes: 0 });
+    mocks.getProviderConnectionById.mockResolvedValue({
+      id: "conn_auto_disabled",
+      provider: "codex",
+      authType: "access_token",
+      accessToken: "token",
+      providerSpecificData: { workspaceId: "acct_disabled" },
+    });
+    mocks.getCodexRateLimitResetCredits.mockResolvedValue({
+      availableCount: 1,
+      credits: [{ id: "credit-disabled", status: "available", expiresAt: new Date(Date.now() + 60_000).toISOString() }],
+    });
+
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/api/usage/conn_auto_disabled/codex-reset-credits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoUseBeforeExpiryMinutes: 10 }),
+    }), { params: Promise.resolve({ connectionId: "conn_auto_disabled" }) });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ code: "disabled", reset: false, auto: true });
+    expect(mocks.consumeCodexRateLimitResetCredit).not.toHaveBeenCalled();
+  });
+
+  it("does not label a manual already-consumed response as automatic", async () => {
+    mocks.getProviderConnectionById.mockResolvedValue({
+      id: "conn_manual_repeat",
+      provider: "codex",
+      authType: "access_token",
+      accessToken: "token",
+      providerSpecificData: {},
+    });
+    mocks.getLatestCodexResetCreditAttempt.mockResolvedValue({
+      id: "attempt-confirmed",
+      status: "confirmed",
+      availableCountBefore: 1,
+      creditFingerprint: "credit-1",
+      redeemRequestId: "redeem-confirmed",
+    });
+
+    const { POST } = await import("../../src/app/api/usage/[connectionId]/codex-reset-credits/route.js");
+    const response = await POST(new Request("http://localhost/api/usage/conn_manual_repeat/codex-reset-credits", {
+      method: "POST",
+    }), { params: Promise.resolve({ connectionId: "conn_manual_repeat" }) });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ code: "already_consumed", reset: false, auto: false });
   });
 
   it("rejects an invalid auto-use threshold", async () => {

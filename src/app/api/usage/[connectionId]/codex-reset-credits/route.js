@@ -2,13 +2,10 @@ import "open-sse/index.js";
 
 import { getProviderConnectionById } from "@/lib/localDb";
 import {
-  findExpiringCodexResetCredit,
   getCodexResetCreditInventory,
   MAX_CODEX_RESET_AUTO_USE_MINUTES,
   useCodexResetCredit,
 } from "@/shared/services/codexResetCreditAutoUse";
-
-export { findExpiringCodexResetCredit };
 
 async function getCodexConnection(connectionId) {
   const connection = await getProviderConnectionById(connectionId);
@@ -44,7 +41,7 @@ function responseForUse(outcome) {
     }, { status: 409 });
   }
   if (["not_due", "unstable_identity", "already_consumed", "disabled"].includes(outcome.state)) {
-    return Response.json({ code: outcome.state, reset: false, auto: true });
+    return Response.json({ code: outcome.state, reset: false, auto: outcome.auto === true });
   }
   if (outcome.state === "auth_required") {
     return Response.json({
@@ -81,7 +78,8 @@ export async function GET(_request, { params }) {
     return Response.json(await getCodexResetCreditInventory(connection));
   } catch (error) {
     console.warn(`[Codex Reset Credits] ${connection?.id || "unknown"}: ${error.message}`);
-    return Response.json({ error: error.message }, { status: 500 });
+    const status = error?.status === 401 || error?.status === 403 ? 401 : 500;
+    return Response.json({ error: error.message }, { status });
   }
 }
 
@@ -111,7 +109,11 @@ export async function POST(request, { params }) {
     const resolved = await getCodexConnection(connectionId);
     if (resolved.response) return resolved.response;
     connection = resolved.connection;
-    const outcome = await useCodexResetCredit(connection, { auto, thresholdMinutes });
+    const outcome = await useCodexResetCredit(connection, {
+      auto,
+      thresholdMinutes,
+      respectSetting: auto,
+    });
     return responseForUse(outcome);
   } catch (error) {
     console.warn(`[Codex Reset Credits] ${connection?.id || "unknown"}: ${error.message}`);

@@ -91,5 +91,7 @@ export async function updateCodexResetCreditAttempt(id, updates) {
     `UPDATE codexResetCreditAttempts SET ${entries.map(([key]) => `${key} = ?`).join(", ")} WHERE id = ?`,
     [...values, id],
   );
-  return rowToAttempt(db.get(`SELECT * FROM codexResetCreditAttempts WHERE id = ?`, [id]));
+  const attempt = rowToAttempt(db.get(`SELECT * FROM codexResetCreditAttempts WHERE id = ?`, [id]));
+  db.flush?.();
+  return attempt;
 }

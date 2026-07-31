@@ -180,6 +180,45 @@ describe("Codex reset-credit server service", () => {
     expect(harness.attempts).toHaveLength(1);
   });
 
+  it("does not treat an expired credit response as an auth failure", async () => {
+    const harness = createHarness();
+    harness.deps.consumeResetCredit.mockResolvedValue({
+      ok: false,
+      status: 409,
+      code: "credit_expired",
+      message: "The reset credit expired",
+    });
+
+    const result = await service.useCodexResetCredit(
+      connection(),
+      { auto: true, thresholdMinutes: 10 },
+      harness.deps,
+      { locks: new Map() },
+    );
+
+    expect(result.state).toBe("rejected");
+    expect(harness.deps.refreshAndUpdateCredentials).not.toHaveBeenCalled();
+  });
+
+  it("releases a missing unresolved credit after the reconciliation deadline", async () => {
+    const harness = createHarness();
+    harness.deps.consumeResetCredit.mockRejectedValueOnce(new Error("connection reset"));
+    await service.useCodexResetCredit(connection(), { auto: true, thresholdMinutes: 10 }, harness.deps, { locks: new Map() });
+    harness.attempts[0].createdAt = "2026-07-30T11:59:59.000Z";
+    harness.deps.getResetCredits.mockResolvedValue({ availableCount: 1, credits: [] });
+
+    const result = await service.useCodexResetCredit(
+      connection("conn-after-timeout"),
+      { auto: true, thresholdMinutes: 10 },
+      harness.deps,
+      { locks: new Map() },
+    );
+
+    expect(result.state).toBe("expired_unresolved");
+    expect(result.result.reason).toBe("missing_credit_reconciliation_timed_out");
+    expect(harness.deps.consumeResetCredit).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks a new consume when an ambiguous credit disappears without count evidence", async () => {
     const harness = createHarness();
     harness.deps.consumeResetCredit.mockRejectedValueOnce(new Error("connection reset"));

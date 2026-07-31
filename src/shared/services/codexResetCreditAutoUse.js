@@ -28,8 +28,20 @@ export {
 };
 export const CODEX_RESET_AUTO_USE_POLL_MS = 60000;
 export const CODEX_RESET_AUTO_USE_CONCURRENCY = 3;
+export const CODEX_RESET_CREDIT_UNKNOWN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
+const AUTH_EXPIRED_PATTERNS = [
+  "token_expired",
+  "token expired",
+  "session expired",
+  "authentication failed",
+  "authentication required",
+  "invalid token",
+  "invalid_token",
+  "unauthorized",
+  "re-authorize",
+  "reauthorize",
+];
 const ACTIVE_ATTEMPT_STATES = new Set(["planned", "dispatching", "unknown", "auth_required"]);
 const CONFIRMED_CREDIT_STATES = new Set(["redeemed", "consumed", "used", "applied"]);
 
@@ -54,7 +66,8 @@ function findManualCredit(inventory) {
 }
 
 function isAuthExpired(value) {
-  if (value?.status === 401 || value?.status === 403) return true;
+  const status = Number(value?.status);
+  if (Number.isFinite(status) && status > 0) return status === 401 || status === 403;
   const text = [value?.message, value?.code, value?.raw?.detail, value?.raw?.error]
     .filter(Boolean)
     .join(" ")
@@ -107,8 +120,14 @@ async function prepareConnection(connection, deps) {
   const proxyConfig = await deps.resolveConnectionProxyConfig(connection.providerSpecificData);
   const proxyOptions = buildProxyOptions(proxyConfig);
   if (connection.authType !== "oauth") return { connection, proxyOptions };
-  const refreshed = await deps.refreshAndUpdateCredentials(connection, false, proxyOptions);
-  return { connection: refreshed.connection, proxyOptions };
+  try {
+    const refreshed = await deps.refreshAndUpdateCredentials(connection, false, proxyOptions);
+    return { connection: refreshed.connection, proxyOptions };
+  } catch (error) {
+    const refreshError = error instanceof Error ? error : new Error(String(error));
+    refreshError.status ||= 401;
+    throw refreshError;
+  }
 }
 
 async function fetchInventory(connection, proxyOptions, deps) {
@@ -146,6 +165,10 @@ async function reconcileAttempt(attempt, inventory, deps) {
   }
   if (!credit && attempt.creditExpiresAt && deps.now() >= new Date(attempt.creditExpiresAt).getTime()) {
     return await finishAttempt(attempt, "expired_unresolved", { reason: "credit_expired_before_outcome_was_known" }, deps);
+  }
+  const attemptCreatedAt = new Date(attempt.createdAt).getTime();
+  if (!credit && Number.isFinite(attemptCreatedAt) && deps.now() - attemptCreatedAt >= CODEX_RESET_CREDIT_UNKNOWN_MAX_AGE_MS) {
+    return await finishAttempt(attempt, "expired_unresolved", { reason: "missing_credit_reconciliation_timed_out" }, deps);
   }
   if (credit && creditStatus !== "available") {
     if (creditStatus === "expired") {
