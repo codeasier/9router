@@ -109,6 +109,22 @@ describe("dashboard image example parameters", () => {
     expect(getParamDefaults(otherFields)).toEqual({ size: "auto" });
   });
 
+  it("keeps global fields for providers that use manual model input", () => {
+    const fields = resolveParamFields(IMAGE_EXAMPLE_FIELDS);
+    const result = buildParamRequest(fields, getParamDefaults(fields));
+
+    expect(fields.map((field) => field.key)).toEqual(IMAGE_EXAMPLE_FIELDS.map((field) => field.key));
+    expect(result.params).toEqual({
+      n: 1,
+      size: "auto",
+      quality: "auto",
+      background: "auto",
+      image_detail: "high",
+      output_format: "png",
+    });
+    expect(result.error).toBe("");
+  });
+
   it("keeps declared Flux fields and omits undeclared global defaults", () => {
     const fluxModel = blackForestLabs.models.find((model) => model.id === "flux-pro-1.1");
     const fields = resolveParamFields(IMAGE_EXAMPLE_FIELDS, fluxModel);
