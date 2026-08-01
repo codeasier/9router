@@ -70,13 +70,16 @@ async function probeMediaProvider(provider, apiKey) {
     default: return null;
   }
 
-  const method = cfg.method || "POST";
-  const res = await fetch(cfg.baseUrl, {
+  const hasValidationEndpoint = !!cfg.validateUrl;
+  const url = hasValidationEndpoint ? cfg.validateUrl : cfg.baseUrl;
+  const method = hasValidationEndpoint ? (cfg.validateMethod || "GET") : (cfg.method || "POST");
+  const res = await fetch(url, {
     method,
     headers,
     body: method === "GET" ? undefined : JSON.stringify({ input: "ping", text: "ping", prompt: "ping", model: getDefaultModel(provider) || "test" }),
     signal: AbortSignal.timeout(8000),
   });
+  if (hasValidationEndpoint) return res.status >= 200 && res.status < 300;
   return res.status !== 401 && res.status !== 403;
 }
 

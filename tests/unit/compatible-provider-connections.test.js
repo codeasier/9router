@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 const originalDataDir = process.env.DATA_DIR;
 
-async function setupTestContext(nodeData) {
+async function setupTestContext(nodeData = null) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "9router-compatible-provider-"));
   process.env.DATA_DIR = tempDir;
   vi.resetModules();
@@ -26,7 +26,7 @@ async function setupTestContext(nodeData) {
     getProviderConnections,
   } = await import("@/models/index.js");
 
-  const node = await createProviderNode(nodeData);
+  const node = nodeData ? await createProviderNode(nodeData) : null;
 
   return {
     node,
@@ -165,5 +165,32 @@ describe("compatible provider connections API", () => {
     expect(storedConnections).toHaveLength(2);
     expectCompatibleConnection(storedConnections[0], ctx.node, { apiType: "chat" });
     expectCompatibleConnection(storedConnections[1], ctx.node, { apiType: "chat" });
+  });
+
+  it("persists a Step Plan API key through the generic provider connection API", async () => {
+    const ctx = await setupTestContext();
+    cleanup = ctx.cleanup;
+
+    const response = await ctx.POST(makeRequest("step-plan", "Step Plan Key"));
+    const body = await response.json();
+    const storedConnections = await ctx.getProviderConnections({ provider: "step-plan" });
+
+    expect(response.status).toBe(201);
+    expect(body.connection).not.toHaveProperty("apiKey");
+    expect(body.connection).toMatchObject({
+      provider: "step-plan",
+      authType: "apikey",
+      name: "Step Plan Key",
+      defaultModel: "test-model",
+    });
+    expect(storedConnections).toHaveLength(1);
+    expect(storedConnections[0]).toMatchObject({
+      provider: "step-plan",
+      authType: "apikey",
+      name: "Step Plan Key",
+      apiKey: "test-key",
+      defaultModel: "test-model",
+      isActive: true,
+    });
   });
 });
