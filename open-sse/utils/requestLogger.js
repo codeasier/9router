@@ -69,25 +69,20 @@ function writeJsonFile(sessionPath, filename, data) {
   }
 }
 
-// Mask sensitive data in headers (DISABLED - keep full token for testing)
+// Mask sensitive and user-configured headers before writing request logs.
 function maskSensitiveHeaders(headers) {
   if (!headers) return {};
-  return { ...headers };
-  
-  // Old masking code (disabled):
-  // const masked = { ...headers };
-  // const sensitiveKeys = ["authorization", "x-api-key", "cookie", "token"];
-  // 
-  // for (const key of Object.keys(masked)) {
-  //   const lowerKey = key.toLowerCase();
-  //   if (sensitiveKeys.some(sk => lowerKey.includes(sk))) {
-  //     const value = masked[key];
-  //     if (value && value.length > 20) {
-  //       masked[key] = value.slice(0, 10) + "..." + value.slice(-5);
-  //     }
-  //   }
-  // }
-  // return masked;
+  const masked = { ...headers };
+  const safeKeys = new Set([
+    "accept", "content-type", "user-agent", "anthropic-version", "anthropic-beta", "x-app",
+  ]);
+  for (const key of Object.keys(masked)) {
+    const lowerKey = key.toLowerCase();
+    if (!safeKeys.has(lowerKey) && !lowerKey.startsWith("x-stainless-")) {
+      masked[key] = "[REDACTED]";
+    }
+  }
+  return masked;
 }
 
 // No-op logger when logging is disabled

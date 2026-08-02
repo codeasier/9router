@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { normalizeCustomHeaders } from "../../../../../open-sse/utils/customHeaders.js";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
 
 // PUT /api/provider-nodes/[id] - Update provider node
@@ -6,8 +7,14 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, prefix, apiType, baseUrl } = body;
+    const { name, prefix, apiType, baseUrl, headers } = body;
     const node = await getProviderNodeById(id);
+    let normalizedHeaders;
+    try {
+      normalizedHeaders = normalizeCustomHeaders(headers);
+    } catch (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
 
     if (!node) {
       return NextResponse.json({ error: "Provider node not found" }, { status: 404 });
@@ -52,6 +59,7 @@ export async function PUT(request, { params }) {
       name: name.trim(),
       prefix: prefix.trim(),
       baseUrl: sanitizedBaseUrl,
+      headers: normalizedHeaders,
     };
 
     if (node.type === "openai-compatible") {
@@ -67,8 +75,9 @@ export async function PUT(request, { params }) {
           ...(connection.providerSpecificData || {}),
           prefix: prefix.trim(),
           apiType: node.type === "openai-compatible" ? apiType : undefined,
-          baseUrl: sanitizedBaseUrl,
-          nodeName: updated.name,
+           baseUrl: sanitizedBaseUrl,
+           ...(Object.keys(normalizedHeaders).length ? { headers: normalizedHeaders } : {}),
+           nodeName: updated.name,
         }
       })
     )));

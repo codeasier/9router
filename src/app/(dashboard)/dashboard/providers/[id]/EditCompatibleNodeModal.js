@@ -9,8 +9,9 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
     name: "",
     prefix: "",
     apiType: "chat",
-    baseUrl: "https://api.openai.com/v1",
-  });
+     baseUrl: "https://api.openai.com/v1",
+     headers: "{}",
+   });
   const [saving, setSaving] = useState(false);
   const [checkKey, setCheckKey] = useState("");
   const [checkModelId, setCheckModelId] = useState("");
@@ -22,8 +23,9 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
       setFormData({
         name: node.name || "",
         prefix: node.prefix || "",
-        apiType: node.apiType || "chat",
-        baseUrl: node.baseUrl || (isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"),
+         apiType: node.apiType || "chat",
+         baseUrl: node.baseUrl || (isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"),
+         headers: JSON.stringify(node.headers || {}, null, 2),
       });
     }
   }, [node, isAnthropic]);
@@ -33,15 +35,23 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
     { value: "responses", label: "Responses API" },
   ];
 
-  const handleSubmit = async () => {
-    if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
-    setSaving(true);
+   const handleSubmit = async () => {
+     if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
+     let headers;
+     try {
+       headers = JSON.parse(formData.headers || "{}");
+     } catch {
+       setValidationResult("failed");
+       return;
+     }
+     setSaving(true);
     try {
-      const payload = {
-        name: formData.name,
-        prefix: formData.prefix,
-        baseUrl: formData.baseUrl,
-      };
+       const payload = {
+         name: formData.name,
+         prefix: formData.prefix,
+         baseUrl: formData.baseUrl,
+         headers,
+       };
       if (!isAnthropic) {
         payload.apiType = formData.apiType;
       }
@@ -59,8 +69,9 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           baseUrl: formData.baseUrl,
-          apiKey: checkKey,
-          type: isAnthropic ? "anthropic-compatible" : "openai-compatible",
+           apiKey: checkKey,
+           headers: (() => { try { return JSON.parse(formData.headers || "{}"); } catch { return {}; } })(),
+           type: isAnthropic ? "anthropic-compatible" : "openai-compatible",
           modelId: checkModelId.trim() || undefined
         }),
       });
@@ -100,13 +111,24 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
             onChange={(e) => setFormData({ ...formData, apiType: e.target.value })}
           />
         )}
-        <Input
-          label="Base URL"
-          value={formData.baseUrl}
-          onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
-          placeholder={isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"}
-          hint={`Use the base URL (ending in /v1) for your ${isAnthropic ? "Anthropic" : "OpenAI"}-compatible API.`}
-        />
+         <Input
+           label="Base URL"
+           value={formData.baseUrl}
+           onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
+           placeholder={isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"}
+           hint={`Use the base URL (ending in /v1) for your ${isAnthropic ? "Anthropic" : "OpenAI"}-compatible API.`}
+         />
+         <label className="flex flex-col gap-1 text-sm">
+           <span>Custom request headers (JSON)</span>
+           <textarea
+             value={formData.headers}
+             onChange={(e) => setFormData({ ...formData, headers: e.target.value })}
+             rows={3}
+             className="rounded border border-border bg-background px-3 py-2 font-mono text-sm"
+             placeholder={'{"User-Agent":"undici"}'}
+           />
+           <span className="text-xs text-text-muted">Values may reference environment variables, for example {"${WORKBUDDY_USER_AGENT}"}.</span>
+         </label>
         <div className="flex gap-2">
           <Input
             label="API Key (for Check)"
@@ -152,8 +174,9 @@ EditCompatibleNodeModal.propTypes = {
     id: PropTypes.string,
     name: PropTypes.string,
     prefix: PropTypes.string,
-    apiType: PropTypes.string,
-    baseUrl: PropTypes.string,
+     apiType: PropTypes.string,
+     baseUrl: PropTypes.string,
+     headers: PropTypes.object,
   }),
   onSave: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,

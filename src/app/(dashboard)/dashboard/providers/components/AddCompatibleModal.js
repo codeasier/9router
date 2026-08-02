@@ -40,8 +40,9 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
     name: "",
     prefix: "",
     ...(config.hasApiType ? { apiType: "chat" } : {}),
-    baseUrl: config.defaultBaseUrl,
-  });
+     baseUrl: config.defaultBaseUrl,
+     headers: "{}",
+   });
 
   const [formData, setFormData] = useState(initialFormData);
   const [submitting, setSubmitting] = useState(false);
@@ -62,8 +63,15 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
   }, [config.hasApiType ? formData.apiType : isOpen]);
 
   const handleSubmit = async () => {
-    if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
-    setSubmitting(true);
+     if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
+     let headers;
+     try {
+       headers = JSON.parse(formData.headers || "{}");
+     } catch {
+       setValidationResult({ valid: false, error: "Headers must be valid JSON" });
+       return;
+     }
+     setSubmitting(true);
     try {
       const res = await fetch("/api/provider-nodes", {
         method: "POST",
@@ -72,8 +80,9 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
           name: formData.name,
           prefix: formData.prefix,
           ...(config.hasApiType ? { apiType: formData.apiType } : {}),
-          baseUrl: formData.baseUrl,
-          type: config.type,
+           baseUrl: formData.baseUrl,
+           headers,
+           type: config.type,
         }),
       });
       const data = await res.json();
@@ -98,8 +107,9 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           baseUrl: formData.baseUrl,
-          apiKey: checkKey,
-          type: config.type,
+           apiKey: checkKey,
+           headers: (() => { try { return JSON.parse(formData.headers || "{}"); } catch { return {}; } })(),
+           type: config.type,
           modelId: checkModelId.trim() || undefined,
         }),
       });
@@ -158,13 +168,24 @@ function AddCompatibleModal({ variant, isOpen, onClose, onCreated }) {
             onChange={(e) => setFormData({ ...formData, apiType: e.target.value })}
           />
         )}
-        <Input
-          label="Base URL"
-          value={formData.baseUrl}
-          onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
-          placeholder={config.defaultBaseUrl}
-          hint={config.baseUrlHint}
-        />
+         <Input
+           label="Base URL"
+           value={formData.baseUrl}
+           onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
+           placeholder={config.defaultBaseUrl}
+           hint={config.baseUrlHint}
+         />
+         <label className="flex flex-col gap-1 text-sm">
+           <span>Custom request headers (JSON)</span>
+           <textarea
+             value={formData.headers}
+             onChange={(e) => setFormData({ ...formData, headers: e.target.value })}
+             rows={3}
+             className="rounded border border-border bg-background px-3 py-2 font-mono text-sm"
+             placeholder={'{"User-Agent":"undici"}'}
+           />
+            <span className="text-xs text-text-muted">Values may reference environment variables, for example {"${WORKBUDDY_USER_AGENT}"}.</span>
+         </label>
         <Input
           label="API Key (for Check)"
           type="password"
