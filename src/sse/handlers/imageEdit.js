@@ -11,10 +11,26 @@ function fieldString(value) {
   return typeof value === "string" ? value : null;
 }
 
-function optionalInt(value) {
+function optionalInt(value, field, min = Number.MIN_SAFE_INTEGER) {
   if (typeof value !== "string" || value === "") return undefined;
-  const n = Number.parseInt(value, 10);
-  return Number.isFinite(n) ? n : undefined;
+  if (!/^-?\d+$/.test(value)) throw new Error(`${field} must be an integer`);
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < min) throw new Error(`${field} must be an integer of at least ${min}`);
+  return n;
+}
+
+function optionalNumber(value, field) {
+  if (typeof value !== "string" || value === "") return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new Error(`${field} must be a number`);
+  return n;
+}
+
+function optionalBoolean(value, field) {
+  if (typeof value !== "string" || value === "") return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${field} must be true or false`);
 }
 
 async function fileToImage(file, limits) {
@@ -41,13 +57,6 @@ async function fileToImage(file, limits) {
  * @param {Request} request
  */
 export async function handleImageEdit(request) {
-  let form;
-  try {
-    form = await request.formData();
-  } catch {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid multipart form data");
-  }
-
   const url = new URL(request.url);
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const wantsStream = (request.headers.get("accept") || "").includes("text/event-stream");
@@ -61,6 +70,19 @@ export async function handleImageEdit(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
+  const contentLength = Number(request.headers.get("content-length"));
+  const multipartOverheadBytes = 64 * 1024;
+  if (Number.isFinite(contentLength) && contentLength > IMAGE_EDIT_LIMITS.maxTotalBytes + multipartOverheadBytes) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, `Total image size too large (max ${Math.round(IMAGE_EDIT_LIMITS.maxTotalBytes / 1024 / 1024)}MB)`);
+  }
+
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid multipart form data");
+  }
+
   const modelStr = fieldString(form.get("model"));
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
 
@@ -70,7 +92,7 @@ export async function handleImageEdit(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Prompt too long (max ${IMAGE_EDIT_LIMITS.maxPromptChars} characters)`);
   }
 
-  const files = form.getAll("image").filter((v) => v instanceof File);
+  const files = [...form.getAll("image"), ...form.getAll("image[]")].filter((v) => v instanceof File);
   if (files.length === 0) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: image");
   }
@@ -98,6 +120,9 @@ export async function handleImageEdit(request) {
   let mask = null;
   const maskFile = form.get("mask");
   if (maskFile instanceof File) {
+    if (totalBytes + maskFile.size > IMAGE_EDIT_LIMITS.maxTotalBytes) {
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, `Total image size too large (max ${Math.round(IMAGE_EDIT_LIMITS.maxTotalBytes / 1024 / 1024)}MB)`);
+    }
     try {
       mask = await fileToImage(maskFile, IMAGE_EDIT_LIMITS);
     } catch (error) {
@@ -105,15 +130,30 @@ export async function handleImageEdit(request) {
     }
   }
 
-  const body = {
-    model: modelStr,
-    prompt,
-    images,
-    mask,
-    n: optionalInt(form.get("n")),
-    size: fieldString(form.get("size")),
-    response_format: fieldString(form.get("response_format")),
-  };
+  let body;
+  try {
+    const cfgScaleValue = form.get("cfg_scale") || form.get("cfg");
+    body = {
+      model: modelStr,
+      prompt,
+      images,
+      mask,
+      n: optionalInt(form.get("n"), "n", 1),
+      size: fieldString(form.get("size")),
+      response_format: fieldString(form.get("response_format")),
+      seed: optionalInt(form.get("seed"), "seed", 0),
+      steps: optionalInt(form.get("steps"), "steps", 1),
+      cfg_scale: optionalNumber(cfgScaleValue, "cfg_scale"),
+      negative_prompt: fieldString(form.get("negative_prompt")),
+      text_mode: optionalBoolean(form.get("text_mode"), "text_mode"),
+      quality: fieldString(form.get("quality")),
+      background: fieldString(form.get("background")),
+      image_detail: fieldString(form.get("image_detail")),
+      output_format: fieldString(form.get("output_format")),
+    };
+  } catch (error) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, error.message || "Invalid image edit parameter");
+  }
 
   const comboModels = await getComboModels(modelStr);
   if (comboModels) {

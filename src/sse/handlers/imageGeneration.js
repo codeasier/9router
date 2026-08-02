@@ -141,6 +141,8 @@ export async function handleSingleModelImage(body, modelStr, { wantsStream, bina
 
     if (result.success) return result.response;
 
+    if (result.shouldFallback === false) return result.response;
+
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
 
     if (shouldFallback) {

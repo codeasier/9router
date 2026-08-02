@@ -8,6 +8,7 @@ const imageUrl = (id) => imageCfg(id).baseUrl;
 export default function createOpenAIAdapter(providerId) {
   const cfg = imageCfg(providerId);
   return {
+    supportsMask: providerId === "openai" || cfg.bodyFields?.includes("mask"),
     buildUrl: () => imageUrl(providerId),
     buildEditUrl: () => editsUrlFrom(imageUrl(providerId)),
     buildHeaders: (creds) => {

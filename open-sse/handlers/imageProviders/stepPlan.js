@@ -58,9 +58,10 @@ export default {
       assertInteger(body.steps, "steps", 1, 50);
       fd.append("steps", String(body.steps));
     }
-    if (body.cfg_scale !== undefined) {
-      assertNumber(body.cfg_scale, "cfg_scale", 1, 10);
-      fd.append("cfg_scale", String(body.cfg_scale));
+    const cfgScale = body.cfg_scale ?? body.cfg;
+    if (cfgScale !== undefined) {
+      assertNumber(cfgScale, "cfg_scale", 1, 10);
+      fd.append("cfg_scale", String(cfgScale));
     }
     if (body.negative_prompt !== undefined) {
       if (typeof body.negative_prompt !== "string") throw new Error("negative_prompt must be a string");
@@ -106,9 +107,10 @@ export default {
       assertInteger(body.steps, "steps", 1, 50);
       request.steps = body.steps;
     }
-    if (body.cfg_scale !== undefined) {
-      assertNumber(body.cfg_scale, "cfg_scale", 1, 10);
-      request.cfg_scale = body.cfg_scale;
+    const cfgScale = body.cfg_scale ?? body.cfg;
+    if (cfgScale !== undefined) {
+      assertNumber(cfgScale, "cfg_scale", 1, 10);
+      request.cfg_scale = cfgScale;
     }
     if (body.negative_prompt !== undefined) {
       if (typeof body.negative_prompt !== "string") {

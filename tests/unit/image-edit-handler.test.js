@@ -65,7 +65,7 @@ function pngFile(name = "input.png", bytes = 3, type = "image/png") {
   return new File([new Uint8Array(bytes)], name, { type });
 }
 
-function makeEditRequest({ model = stepPlanModel, prompt = "make it sunset", files = [pngFile()], mask = null, query = "" } = {}) {
+function makeEditRequest({ model = stepPlanModel, prompt = "make it sunset", files = [pngFile()], mask = null, query = "", fields = {}, headers = {} } = {}) {
   const fd = new FormData();
   if (model) fd.append("model", model);
   fd.append("prompt", prompt);
@@ -74,9 +74,13 @@ function makeEditRequest({ model = stepPlanModel, prompt = "make it sunset", fil
   fd.append("n", "1");
   fd.append("size", "1024x1024");
   fd.append("response_format", "url");
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && value !== null) fd.append(key, String(value));
+  }
   return new Request(`http://localhost/v1/images/edits${query}`, {
     method: "POST",
     body: fd,
+    headers,
   });
 }
 
@@ -111,11 +115,14 @@ afterEach(() => {
 describe("handleImageEdit", () => {
   it("rejects a missing local API key when local API-key protection is enabled", async () => {
     settingsMocks.getSettings.mockResolvedValue({ requireApiKey: true });
+    const request = makeEditRequest();
+    const formDataSpy = vi.spyOn(request, "formData");
 
-    const response = await handleImageEdit(makeEditRequest());
+    const response = await handleImageEdit(request);
 
     expect(response.status).toBe(401);
     expect(await response.text()).toContain("Missing API key");
+    expect(formDataSpy).not.toHaveBeenCalled();
     expect(authMocks.getProviderCredentials).not.toHaveBeenCalled();
   });
 
@@ -190,13 +197,49 @@ describe("handleImageEdit", () => {
     expect(coreMocks.handleImageGenerationCore).not.toHaveBeenCalled();
   });
 
-  it("passes parsed images, mask and fields to the core with operation edit", async () => {
+  it("rejects an obviously oversized request before parsing multipart data", async () => {
+    IMAGE_EDIT_LIMITS.maxTotalBytes = 4;
+    const request = makeEditRequest({ headers: { "content-length": String(70 * 1024) } });
+    const formDataSpy = vi.spyOn(request, "formData");
+
+    const response = await handleImageEdit(request);
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Total image size too large");
+    expect(formDataSpy).not.toHaveBeenCalled();
+  });
+
+  it("counts the mask toward the aggregate upload limit", async () => {
+    IMAGE_EDIT_LIMITS.maxTotalBytes = 5;
+
+    const response = await handleImageEdit(makeEditRequest({
+      files: [pngFile("input.png", 3)],
+      mask: pngFile("mask.png", 3),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Total image size too large");
+    expect(coreMocks.handleImageGenerationCore).not.toHaveBeenCalled();
+  });
+
+  it("passes parsed images, mask and provider fields to the core with operation edit", async () => {
     const upstream = Response.json({ data: [{ url: "https://example.com/edited.png" }] });
     coreMocks.handleImageGenerationCore.mockResolvedValue({ success: true, response: upstream });
 
     const response = await handleImageEdit(makeEditRequest({
       files: [pngFile("one.png", 3), pngFile("two.png", 3)],
       mask: pngFile("mask.png", 3),
+      fields: {
+        seed: 7,
+        steps: 12,
+        cfg: 1.7,
+        negative_prompt: "rain",
+        text_mode: false,
+        quality: "high",
+        background: "transparent",
+        image_detail: "low",
+        output_format: "webp",
+      },
     }));
 
     expect(response).toBe(upstream);
@@ -221,6 +264,25 @@ describe("handleImageEdit", () => {
     expect(coreCall.body.n).toBe(1);
     expect(coreCall.body.size).toBe("1024x1024");
     expect(coreCall.body.response_format).toBe("url");
+    expect(coreCall.body).toMatchObject({
+      seed: 7,
+      steps: 12,
+      cfg_scale: 1.7,
+      negative_prompt: "rain",
+      text_mode: false,
+      quality: "high",
+      background: "transparent",
+      image_detail: "low",
+      output_format: "webp",
+    });
+  });
+
+  it("rejects invalid typed provider fields", async () => {
+    const response = await handleImageEdit(makeEditRequest({ fields: { text_mode: "yes" } }));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("text_mode must be true or false");
+    expect(coreMocks.handleImageGenerationCore).not.toHaveBeenCalled();
   });
 
   it("propagates response_format=binary as binaryOutput", async () => {
@@ -279,5 +341,21 @@ describe("handleImageEdit", () => {
     expect(response).toBe(successResponse);
     expect(authMocks.getProviderCredentials).toHaveBeenCalledTimes(2);
     expect(coreMocks.handleImageGenerationCore.mock.calls[1][0].credentials).toBe(second);
+  });
+
+  it("returns a local edit error without marking the account unavailable", async () => {
+    const localError = new Response("unsupported", { status: 400 });
+    coreMocks.handleImageGenerationCore.mockResolvedValue({
+      success: false,
+      status: 400,
+      error: "Provider does not support image editing",
+      response: localError,
+      shouldFallback: false,
+    });
+
+    const response = await handleImageEdit(makeEditRequest());
+
+    expect(response).toBe(localError);
+    expect(authMocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
 });

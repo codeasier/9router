@@ -5,6 +5,10 @@ import { getExecutor } from "../executors/index.js";
 import { getImageAdapter } from "./imageProviders/index.js";
 import { urlToBase64 } from "./imageProviders/_base.js";
 
+function createLocalErrorResult(status, message) {
+  return { ...createErrorResult(status, message), shouldFallback: false };
+}
+
 function serializeRequestBody(requestBody) {
   if (typeof FormData !== "undefined" && requestBody instanceof FormData) return requestBody;
   if (typeof requestBody === "string") return requestBody;
@@ -33,7 +37,7 @@ function stripFormDataContentType(headers, requestBody) {
  * @param {boolean} [options.binaryOutput] - Return raw image bytes
  * @param {function} [options.onCredentialsRefreshed]
  * @param {function} [options.onRequestSuccess]
- * @returns {Promise<{ success: boolean, response: Response, status?: number, error?: string }>}
+ * @returns {Promise<{ success: boolean, response: Response, status?: number, error?: string, shouldFallback?: boolean }>}
  */
 export async function handleImageGenerationCore({
   body,
@@ -50,28 +54,35 @@ export async function handleImageGenerationCore({
   const isEdit = operation === "edit";
 
   if (!body.prompt) {
-    return createErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
+    return createLocalErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
   }
 
   if (isEdit) {
     const images = body.images || (body.image ? [body.image] : []);
     if (images.length === 0) {
-      return createErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: image");
+      return createLocalErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: image");
     }
   }
 
   const adapter = getImageAdapter(provider);
   if (!adapter) {
-    return createErrorResult(
+    return createLocalErrorResult(
       HTTP_STATUS.BAD_REQUEST,
       `Provider '${provider}' does not support image generation`
     );
   }
 
   if (isEdit && (!adapter.buildEditUrl || !adapter.buildEditBody)) {
-    return createErrorResult(
+    return createLocalErrorResult(
       HTTP_STATUS.BAD_REQUEST,
       `Provider '${provider}' does not support image editing`
+    );
+  }
+
+  if (isEdit && body.mask && !adapter.supportsMask) {
+    return createLocalErrorResult(
+      HTTP_STATUS.BAD_REQUEST,
+      `Provider '${provider}' does not support image edit masks`
     );
   }
 
@@ -133,7 +144,7 @@ export async function handleImageGenerationCore({
       headers = adapter.buildHeaders(credentials, requestBody, model, body);
     }
   } catch (error) {
-    return createErrorResult(HTTP_STATUS.BAD_REQUEST, error.message || `Invalid ${provider} image request`);
+    return createLocalErrorResult(HTTP_STATUS.BAD_REQUEST, error.message || `Invalid ${provider} image request`);
   }
 
   log?.debug?.("IMAGE", `${isEdit ? "IMAGE EDIT" : "IMAGE"} | ${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..."`);

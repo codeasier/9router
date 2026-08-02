@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
+import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
 
 const originalFetch = global.fetch;
 
@@ -41,7 +42,7 @@ describe("handleImageGenerationCore (edit)", () => {
     );
 
     const result = await handleImageGenerationCore({
-      body: { prompt: "make it sunset", images: [makeImage()], seed: 1, steps: 8, cfg_scale: 1.5, response_format: "url" },
+      body: { prompt: "make it sunset", images: [makeImage()], seed: 1, steps: 8, cfg: 1.5, response_format: "url" },
       modelInfo: { provider: "step-plan", model: "step-image-edit-2" },
       credentials: { apiKey: "test-key" },
       log: null,
@@ -87,6 +88,7 @@ describe("handleImageGenerationCore (edit)", () => {
     expect(result.success).toBe(false);
     expect(result.status).toBe(400);
     expect(result.error).toContain("exactly one input image");
+    expect(result.shouldFallback).toBe(false);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -203,6 +205,29 @@ describe("handleImageGenerationCore (edit)", () => {
     expect(result.success).toBe(false);
     expect(result.status).toBe(400);
     expect(result.error).toContain("does not support image editing");
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not advertise file editing for NanoBanana", () => {
+    expect(getCapabilitiesForModel("nanobanana", "nanobanana-flash").imageEdit).toBe(false);
+  });
+
+  it.each([
+    ["gemini", "gemini-2.5-flash-image", { apiKey: "google-key" }],
+    ["step-plan", "step-image-edit-2", { apiKey: "step-key" }],
+    ["codex", "gpt-5.2-codex-image", { accessToken: "codex-key" }],
+  ])("rejects masks that %s cannot preserve", async (provider, model, credentials) => {
+    const result = await handleImageGenerationCore({
+      body: { prompt: "edit this", images: [makeImage()], mask: makeImage("bWFzaw==") },
+      modelInfo: { provider, model },
+      credentials,
+      operation: "edit",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe(400);
+    expect(result.error).toContain("does not support image edit masks");
+    expect(result.shouldFallback).toBe(false);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
