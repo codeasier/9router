@@ -39,6 +39,14 @@ function envMs(name, def) {
   return Number.isFinite(n) && n > 0 ? n : def;
 }
 
+// Parse a comma-separated env list, falling back to a default array.
+function envList(name, def) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return def;
+  const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return parts.length > 0 ? parts : def;
+}
+
 function envUrl(name, def) {
   const raw = process.env[name]?.trim();
   return raw || def;
@@ -63,6 +71,18 @@ export const CODEX_RESET_CREDIT_REQUEST_TIMEOUT_MS = envMs("CODEX_RESET_CREDIT_R
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
+
+// Image edits (POST /v1/images/edits) local validation limits + upstream timeout.
+// Env: IMAGE_EDIT_MAX_IMAGES, IMAGE_EDIT_MAX_FILE_BYTES, IMAGE_EDIT_MAX_TOTAL_BYTES,
+//      IMAGE_EDIT_MAX_PROMPT_CHARS, IMAGE_EDIT_TIMEOUT_MS, IMAGE_EDIT_ALLOWED_MIME_TYPES.
+export const IMAGE_EDIT_LIMITS = {
+  maxImages: envMs("IMAGE_EDIT_MAX_IMAGES", 4),
+  maxFileBytes: envMs("IMAGE_EDIT_MAX_FILE_BYTES", 20 * 1024 * 1024),
+  maxTotalBytes: envMs("IMAGE_EDIT_MAX_TOTAL_BYTES", 40 * 1024 * 1024),
+  maxPromptChars: envMs("IMAGE_EDIT_MAX_PROMPT_CHARS", 512),
+  timeoutMs: envMs("IMAGE_EDIT_TIMEOUT_MS", 120 * 1000),
+  allowedMimeTypes: new Set(envList("IMAGE_EDIT_ALLOWED_MIME_TYPES", ["image/png", "image/jpeg", "image/webp"])),
+};
 
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;
