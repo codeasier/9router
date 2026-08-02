@@ -27,12 +27,58 @@ function assertNumber(value, field, min, max) {
 
 export default {
   buildUrl: () => PROVIDER_MEDIA[PROVIDER_ID].imageConfig.baseUrl,
+  buildEditUrl: () => PROVIDER_MEDIA[PROVIDER_ID].imageConfig.baseUrl.replace(/\/images\/generations$/, "/images/edits"),
   buildHeaders: (credentials) => {
     const key = credentials?.apiKey || credentials?.accessToken;
     return {
       "Content-Type": "application/json",
       ...(key ? { Authorization: `Bearer ${key}` } : {}),
     };
+  },
+  buildEditBody: (model, body) => {
+    assertString(body.prompt, "prompt", 512);
+
+    const images = body.images || (body.image ? [body.image] : []);
+    if (images.length !== 1) {
+      throw new Error("Step Plan supports exactly one input image for edits");
+    }
+    const img = images[0];
+    if (!img?.b64) throw new Error("image must contain base64 data");
+
+    const fd = new FormData();
+    fd.append("model", model);
+    fd.append("image", new Blob([Buffer.from(img.b64, "base64")], { type: img.mime || "image/png" }), img.name || "image.png");
+    fd.append("prompt", body.prompt);
+
+    if (body.seed !== undefined) {
+      assertInteger(body.seed, "seed", 0, 2147483647);
+      fd.append("seed", String(body.seed));
+    }
+    if (body.steps !== undefined) {
+      assertInteger(body.steps, "steps", 1, 50);
+      fd.append("steps", String(body.steps));
+    }
+    if (body.cfg_scale !== undefined) {
+      assertNumber(body.cfg_scale, "cfg_scale", 1, 10);
+      fd.append("cfg_scale", String(body.cfg_scale));
+    }
+    if (body.negative_prompt !== undefined) {
+      if (typeof body.negative_prompt !== "string") throw new Error("negative_prompt must be a string");
+      if (Array.from(body.negative_prompt).length > 512) throw new Error("negative_prompt must be at most 512 characters");
+      fd.append("negative_prompt", body.negative_prompt);
+    }
+    if (body.text_mode !== undefined) {
+      if (typeof body.text_mode !== "boolean") throw new Error("text_mode must be a boolean");
+      fd.append("text_mode", String(body.text_mode));
+    }
+    if (body.response_format !== undefined) {
+      if (typeof body.response_format !== "string" || !VALID_RESPONSE_FORMATS.has(body.response_format)) {
+        throw new Error("response_format must be url or b64_json");
+      }
+      fd.append("response_format", body.response_format);
+    }
+
+    return fd;
   },
   buildBody: (model, body) => {
     assertString(body.prompt, "prompt", 512);

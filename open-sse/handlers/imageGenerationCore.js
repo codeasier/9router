@@ -1,5 +1,5 @@
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
-import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, IMAGE_EDIT_LIMITS } from "../config/runtimeConfig.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { getExecutor } from "../executors/index.js";
 import { getImageAdapter } from "./imageProviders/index.js";
@@ -11,14 +11,23 @@ function serializeRequestBody(requestBody) {
   return JSON.stringify(requestBody);
 }
 
+// multipart bodies must not carry a pre-set Content-Type (fetch adds the boundary itself)
+function stripFormDataContentType(headers, requestBody) {
+  if (typeof FormData !== "undefined" && requestBody instanceof FormData && headers) {
+    delete headers["Content-Type"];
+  }
+  return headers;
+}
+
 /**
  * Core image generation handler — orchestrator only.
  * Provider-specific URL/headers/body/parse/normalize live in `./imageProviders/{id}.js`.
  *
  * @param {object} options
- * @param {object} options.body - Request body { model, prompt, n, size, ... }
+ * @param {object} options.body - Request body { model, prompt, n, size, ... } (edits: { images: [{b64, mime}], mask, ... })
  * @param {object} options.modelInfo - { provider, model }
  * @param {object} options.credentials - Provider credentials
+ * @param {string} [options.operation] - "generation" (default) or "edit"
  * @param {object} [options.log] - Logger
  * @param {boolean} [options.streamToClient] - Pipe SSE to client (codex)
  * @param {boolean} [options.binaryOutput] - Return raw image bytes
@@ -33,13 +42,22 @@ export async function handleImageGenerationCore({
   log,
   streamToClient = false,
   binaryOutput = false,
+  operation = "generation",
   onCredentialsRefreshed,
   onRequestSuccess,
 }) {
   const { provider, model } = modelInfo;
+  const isEdit = operation === "edit";
 
   if (!body.prompt) {
     return createErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
+  }
+
+  if (isEdit) {
+    const images = body.images || (body.image ? [body.image] : []);
+    if (images.length === 0) {
+      return createErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: image");
+    }
   }
 
   const adapter = getImageAdapter(provider);
@@ -47,6 +65,13 @@ export async function handleImageGenerationCore({
     return createErrorResult(
       HTTP_STATUS.BAD_REQUEST,
       `Provider '${provider}' does not support image generation`
+    );
+  }
+
+  if (isEdit && (!adapter.buildEditUrl || !adapter.buildEditBody)) {
+    return createErrorResult(
+      HTTP_STATUS.BAD_REQUEST,
+      `Provider '${provider}' does not support image editing`
     );
   }
 
@@ -96,23 +121,40 @@ export async function handleImageGenerationCore({
   let requestBody;
 
   try {
-    url = adapter.buildUrl(model, credentials);
-    requestBody = await adapter.buildBody(model, body);
-    headers = adapter.buildHeaders(credentials, requestBody, model, body);
+    if (isEdit) {
+      url = adapter.buildEditUrl(model, credentials);
+      requestBody = await adapter.buildEditBody(model, body);
+      headers = adapter.buildEditHeaders
+        ? adapter.buildEditHeaders(credentials, requestBody, model, body)
+        : adapter.buildHeaders(credentials, requestBody, model, body);
+    } else {
+      url = adapter.buildUrl(model, credentials);
+      requestBody = await adapter.buildBody(model, body);
+      headers = adapter.buildHeaders(credentials, requestBody, model, body);
+    }
   } catch (error) {
     return createErrorResult(HTTP_STATUS.BAD_REQUEST, error.message || `Invalid ${provider} image request`);
   }
 
-  log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..."`);
+  log?.debug?.("IMAGE", `${isEdit ? "IMAGE EDIT" : "IMAGE"} | ${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..."`);
 
   let providerResponse;
   try {
-    providerResponse = await fetch(url, {
+    const fetchOptions = {
       method: "POST",
-      headers,
+      headers: stripFormDataContentType(headers, requestBody),
       body: serializeRequestBody(requestBody),
-    });
+    };
+    if (isEdit && IMAGE_EDIT_LIMITS.timeoutMs > 0) {
+      fetchOptions.signal = AbortSignal.timeout(IMAGE_EDIT_LIMITS.timeoutMs);
+    }
+    providerResponse = await fetch(url, fetchOptions);
   } catch (error) {
+    if (isEdit && error?.name === "TimeoutError") {
+      const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.GATEWAY_TIMEOUT);
+      log?.debug?.("IMAGE", `Edit timeout: ${errMsg}`);
+      return createErrorResult(HTTP_STATUS.GATEWAY_TIMEOUT, errMsg);
+    }
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     log?.debug?.("IMAGE", `Fetch error: ${errMsg}`);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
@@ -133,19 +175,34 @@ export async function handleImageGenerationCore({
     );
 
     if (newCredentials?.accessToken || newCredentials?.apiKey) {
-      log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for image generation`);
+      log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for image ${isEdit ? "editing" : "generation"}`);
       Object.assign(credentials, newCredentials);
       if (onCredentialsRefreshed) await onCredentialsRefreshed(newCredentials);
 
       try {
-        const retryBody = await adapter.buildBody(model, body);
-        const retryHeaders = adapter.buildHeaders(credentials, retryBody, model, body);
-        const retryUrl = adapter.buildUrl(model, credentials);
-        providerResponse = await fetch(retryUrl, {
+        let retryBody;
+        let retryHeaders;
+        let retryUrl;
+        if (isEdit) {
+          retryBody = await adapter.buildEditBody(model, body);
+          retryHeaders = adapter.buildEditHeaders
+            ? adapter.buildEditHeaders(credentials, retryBody, model, body)
+            : adapter.buildHeaders(credentials, retryBody, model, body);
+          retryUrl = adapter.buildEditUrl(model, credentials);
+        } else {
+          retryBody = await adapter.buildBody(model, body);
+          retryHeaders = adapter.buildHeaders(credentials, retryBody, model, body);
+          retryUrl = adapter.buildUrl(model, credentials);
+        }
+        const retryOptions = {
           method: "POST",
-          headers: retryHeaders,
+          headers: stripFormDataContentType(retryHeaders, retryBody),
           body: serializeRequestBody(retryBody),
-        });
+        };
+        if (isEdit && IMAGE_EDIT_LIMITS.timeoutMs > 0) {
+          retryOptions.signal = AbortSignal.timeout(IMAGE_EDIT_LIMITS.timeoutMs);
+        }
+        providerResponse = await fetch(retryUrl, retryOptions);
       } catch {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
       }

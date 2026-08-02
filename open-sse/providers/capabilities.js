@@ -36,6 +36,7 @@ export const DEFAULT_CAPABILITIES = {
   videoInput: false,    // read video
   // output modalities
   imageOutput: false,   // generate images
+  imageEdit: false,     // edit input images (POST /v1/images/edits)
   audioOutput: false,   // generate audio
   // features
   search: false,        // built-in web search tool / grounding
@@ -88,7 +89,11 @@ export const MODEL_CAPABILITIES = {
   "claude-sonnet-5-thinking-agentic": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
 
   // Gemini image-gen / OpenAI image / xai image variants
-  "gpt-image-1":       { imageOutput: true, tools: false },
+  "gpt-image-1":       { imageOutput: true, imageEdit: true, tools: false },
+  "dall-e-2":          { imageOutput: true, imageEdit: true, tools: false },
+
+  // Step Plan image editing model
+  "step-image-edit-2": { imageOutput: true, imageEdit: true, tools: false },
 
   // GLM vision variant (text GLM has no vision)
   "glm-4.6v":          { vision: true, reasoning: true, thinkingFormat: "zai", contextWindow: 128000 },
@@ -194,14 +199,14 @@ export const PATTERN_CAPABILITIES = [
   { pattern: "*claude*",        caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-budget" } },
 
   // ── Gemini (all 2.0+ multimodal + google_search grounding, 1M ctx) ─
-  { pattern: "*gemini*image*",  caps: { vision: true, imageOutput: true, contextWindow: 1048576 } },
+  { pattern: "*gemini*image*",  caps: { vision: true, imageOutput: true, imageEdit: true, contextWindow: 1048576 } },
   { pattern: "*gemini-3*pro*",  caps: { vision: true, audioInput: true, videoInput: true, reasoning: true, search: true, thinkingFormat: "gemini-level", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 65535 } },
   { pattern: "*gemini-3*",      caps: { vision: true, audioInput: true, videoInput: true, reasoning: true, search: true, thinkingFormat: "gemini-level", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 65536 } },
   { pattern: "*gemini-2.5*",    caps: { vision: true, audioInput: true, videoInput: true, reasoning: true, search: true, thinkingFormat: "gemini-budget", thinkingRange: { min: 0, max: 24576 }, contextWindow: 1048576, maxOutput: 65536 } },
   { pattern: "*gemini-2*",      caps: { vision: true, audioInput: true, videoInput: true, search: true, contextWindow: 1048576, maxOutput: 65536 } },
   { pattern: "*gemini*",        caps: { vision: true, search: true, contextWindow: 1048576 } },
   { pattern: "*gemma*",         caps: { vision: true, contextWindow: 128000 } },
-  { pattern: "*nanobanana*",    caps: { vision: true, imageOutput: true } },
+  { pattern: "*nanobanana*",    caps: { vision: true, imageOutput: true, imageEdit: true } },
 
   // ── OpenAI GPT-5.x (vision + thinking + web search) ──────────────
   { pattern: "*gpt-5*image*",   caps: { imageOutput: true } },
