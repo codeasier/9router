@@ -783,3 +783,214 @@ export async function getRecentLogs(limit = 200) {
     return [];
   }
 }
+
+// ============================================================
+// Per-API-key usage aggregation (issue #5 — /v1/usage)
+// ============================================================
+//
+// Returns aggregated usage for ONE API key within an explicit [start, end)
+// window. Aggregates are computed in JS from a single bounded
+// usageHistory scan, so cost is O(rows_in_window) regardless of total DB
+// size as long as the (apiKey, timestamp DESC) index covers the predicate.
+//
+// Bucketing:
+//   - `total` / `byModel` use raw UTC counts.
+//   - `byDay` uses the caller-supplied IANA timezone so a UTC+8 client's
+//     "natural day" matches what they see in their wall-clock calendar.
+//
+// Token fields returned mirror the canonical prompt/completion/cached
+// convention used elsewhere in the repo. Cost is persisted at write time
+// (`saveRequestUsage`) — we sum what's already on disk to avoid repricing
+// on every query.
+
+const MAX_USAGE_QUERY_DAYS = 31;
+const MAX_USAGE_QUERY_ROWS = 50000;
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+// YYYY-MM-DD in the target IANA timezone. Uses Intl.DateTimeFormat with the
+// "en-CA" locale because it emits ISO-style YYYY-MM-DD by default — avoiding
+// the ambiguity of en-US month/day order while still going through Intl so
+// we get correct DST handling.
+function dateKeyInTimezone(date, timeZone) {
+  try {
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const parts = fmt.formatToParts(date);
+    const y = parts.find((p) => p.type === "year")?.value;
+    const m = parts.find((p) => p.type === "month")?.value;
+    const d = parts.find((p) => p.type === "day")?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch {
+    // Fall through to local-time bucket below.
+  }
+  // Last-resort fallback: server local time. Caller passed an invalid
+  // timezone; surface that with the default they effectively got.
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function emptyTotals() {
+  return {
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    cachedTokens: 0,
+    cost: 0,
+  };
+}
+
+function addToTotals(totals, row) {
+  totals.requests += 1;
+  totals.promptTokens += row.promptTokens || 0;
+  totals.completionTokens += row.completionTokens || 0;
+  totals.cachedTokens += row.cachedTokens || 0;
+  totals.cost += row.cost || 0;
+}
+
+function emptyBucket() {
+  return {
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    cachedTokens: 0,
+    cost: 0,
+  };
+}
+
+// Aggregate a single API key's usage over [start, end). Caller is responsible
+// for sanitizing/validating inputs (timezone, range cap). Time bounds are
+// passed as ms-since-epoch UTC; SQL gets ISO strings for index friendliness.
+export async function getUsageForApiKey({ apiKey, startMs, endMs, timeZone }) {
+  if (!apiKey || typeof apiKey !== "string") {
+    throw new Error("apiKey required");
+  }
+  if (!(startMs < endMs)) {
+    throw new Error("invalid time window");
+  }
+
+  const db = await getAdapter();
+  const startIso = new Date(startMs).toISOString();
+  const endIso = new Date(endMs).toISOString();
+
+  // Single bounded scan — index covers (apiKey, timestamp DESC).
+  // Hard row cap is a safety net against accidental huge ranges before the
+  // request-level MAX_USAGE_QUERY_DAYS check kicks in.
+  const rows = db.all(
+    `SELECT timestamp, model, promptTokens, completionTokens, cost, tokens
+       FROM usageHistory
+      WHERE apiKey = ?
+        AND timestamp >= ?
+        AND timestamp < ?
+      ORDER BY timestamp ASC
+      LIMIT ?`,
+    [apiKey, startIso, endIso, MAX_USAGE_QUERY_ROWS]
+  );
+
+  const total = emptyTotals();
+  const byModel = new Map(); // model -> totals
+  const byDay = new Map();   // dateKey -> totals (client tz)
+
+  for (const r of rows) {
+    const tokens = parseJson(r.tokens, {}) || {};
+    const cachedTokens =
+      tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
+    const enriched = {
+      timestamp: r.timestamp,
+      model: r.model || "unknown",
+      promptTokens: r.promptTokens || 0,
+      completionTokens: r.completionTokens || 0,
+      cachedTokens,
+      cost: r.cost || 0,
+    };
+
+    addToTotals(total, enriched);
+
+    const modelKey = enriched.model;
+    if (!byModel.has(modelKey)) byModel.set(modelKey, emptyTotals());
+    addToTotals(byModel.get(modelKey), enriched);
+
+    const dayKey = dateKeyInTimezone(new Date(r.timestamp), timeZone);
+    if (!byDay.has(dayKey)) byDay.set(dayKey, emptyBucket());
+    addToTotals(byDay.get(dayKey), enriched);
+  }
+
+  // Fill missing days inside the requested window with zeros so chart UI
+  // doesn't have to backfill on the client. Uses day arithmetic in the
+  // requested timezone to keep DST-safe boundary alignment.
+  const dayKeys = enumerateDateKeysInWindow(startMs, endMs, timeZone);
+  const filledByDay = dayKeys.map((dateKey) => {
+    const bucket = byDay.get(dateKey) || emptyBucket();
+    return {
+      date: dateKey,
+      requests: bucket.requests,
+      promptTokens: bucket.promptTokens,
+      completionTokens: bucket.completionTokens,
+      cachedTokens: bucket.cachedTokens,
+      cost: roundCurrency(bucket.cost),
+    };
+  });
+
+  return {
+    total: {
+      requests: total.requests,
+      promptTokens: total.promptTokens,
+      completionTokens: total.completionTokens,
+      cachedTokens: total.cachedTokens,
+      cost: roundCurrency(total.cost),
+    },
+    byModel: Array.from(byModel.entries())
+      .map(([model, t]) => ({
+        model,
+        requests: t.requests,
+        promptTokens: t.promptTokens,
+        completionTokens: t.completionTokens,
+        cachedTokens: t.cachedTokens,
+        cost: roundCurrency(t.cost),
+      }))
+      .sort((a, b) => b.requests - a.requests),
+    byDay: filledByDay,
+    truncated: rows.length >= MAX_USAGE_QUERY_ROWS,
+  };
+}
+
+// Enumerate YYYY-MM-DD keys covering [startMs, endMs) in the target tz.
+// Pure JS (uses Intl.DateTimeFormat per iteration) so it correctly handles
+// DST shifts within the window. Cheap for windows <= MAX_USAGE_QUERY_DAYS.
+function enumerateDateKeysInWindow(startMs, endMs, timeZone) {
+  const keys = [];
+  const seen = new Set();
+  // Step in 1-day UTC increments and re-format under the target tz — avoids
+  // wrestling with non-UTC date arithmetic.
+  for (let t = startMs; t < endMs; t += 86400000) {
+    const key = dateKeyInTimezone(new Date(t), timeZone);
+    if (!seen.has(key)) {
+      seen.add(key);
+      keys.push(key);
+    }
+  }
+  // Always include the end-exclusive boundary date so a partial final day
+  // surfaces even when zero records fall inside it.
+  const endKey = dateKeyInTimezone(new Date(endMs - 1), timeZone);
+  if (!seen.has(endKey)) keys.push(endKey);
+  return keys;
+}
+
+function roundCurrency(n) {
+  // 6-decimal precision is enough for cost-per-million-token pricing without
+  // floating-point dust. Rounded at serialization time, not in the inner
+  // loop, so totals stay numerically stable across rows.
+  return Math.round((n || 0) * 1e6) / 1e6;
+}
+
+// Surface the configured ceiling so callers (route handler + tests) can
+// validate input without re-encoding the magic number.
+export const USAGE_QUERY_LIMITS = Object.freeze({
+  MAX_DAYS: MAX_USAGE_QUERY_DAYS,
+  MAX_ROWS: MAX_USAGE_QUERY_ROWS,
+});
