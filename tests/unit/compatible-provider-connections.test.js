@@ -21,6 +21,7 @@ async function setupTestContext(nodeData = null) {
   }));
 
   const { POST } = await import("@/app/api/providers/route.js");
+  const { PUT } = await import("@/app/api/provider-nodes/[id]/route.js");
   const {
     createProviderNode,
     getProviderConnections,
@@ -31,6 +32,7 @@ async function setupTestContext(nodeData = null) {
   return {
     node,
     POST,
+    PUT,
     getProviderConnections,
     cleanup() {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -165,6 +167,45 @@ describe("compatible provider connections API", () => {
     expect(storedConnections).toHaveLength(2);
     expectCompatibleConnection(storedConnections[0], ctx.node, { apiType: "chat" });
     expectCompatibleConnection(storedConnections[1], ctx.node, { apiType: "chat" });
+  });
+
+  it("preserves omitted headers and clears explicit empty headers on existing connections", async () => {
+    const ctx = await setupTestContext({
+      id: "openai-compatible-headers-test",
+      type: "openai-compatible",
+      name: "Headers Node",
+      prefix: "hdr",
+      apiType: "chat",
+      baseUrl: "https://headers.test/v1",
+      headers: { "User-Agent": "undici" },
+    });
+    cleanup = ctx.cleanup;
+    await ctx.POST(makeRequest(ctx.node.id));
+
+    const updateNode = (body) => ctx.PUT(new Request(`https://9router.local/api/provider-nodes/${ctx.node.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }), { params: Promise.resolve({ id: ctx.node.id }) });
+
+    await updateNode({
+      name: "Renamed Headers Node",
+      prefix: "hdr",
+      apiType: "chat",
+      baseUrl: "https://headers.test/v1",
+    });
+    let [connection] = await ctx.getProviderConnections({ provider: ctx.node.id });
+    expect(connection.providerSpecificData.headers).toEqual({ "User-Agent": "undici" });
+
+    await updateNode({
+      name: "Renamed Headers Node",
+      prefix: "hdr",
+      apiType: "chat",
+      baseUrl: "https://headers.test/v1",
+      headers: {},
+    });
+    [connection] = await ctx.getProviderConnections({ provider: ctx.node.id });
+    expect(connection.providerSpecificData.headers).toEqual({});
   });
 
   it("persists a Step Plan API key through the generic provider connection API", async () => {
