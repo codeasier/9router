@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createProviderNode, getProviderNodes } from "@/models";
 import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX } from "@/shared/constants/providers";
 import { generateId } from "@/shared/utils";
-import { normalizeCustomHeaders } from "../../../../open-sse/utils/customHeaders.js";
+import { normalizeCustomHeaders, resolveCustomHeaders } from "../../../../open-sse/utils/customHeaders.js";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +37,7 @@ export async function POST(request) {
     let normalizedHeaders;
     try {
       normalizedHeaders = normalizeCustomHeaders(headers);
+      resolveCustomHeaders(normalizedHeaders);
     } catch (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }

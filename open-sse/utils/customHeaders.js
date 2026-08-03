@@ -28,20 +28,45 @@ export function normalizeCustomHeaders(headers) {
 }
 
 export function resolveCustomHeaders(headers, env = process.env) {
+  const allowedEnvNames = new Set(
+    String(env.CUSTOM_HEADER_ENV_ALLOWLIST || "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean)
+  );
   const resolved = {};
   for (const [name, template] of Object.entries(normalizeCustomHeaders(headers))) {
-    resolved[name] = template.replace(ENV_PATTERN, (_, key) => env[key] ?? "");
+    resolved[name] = template.replace(ENV_PATTERN, (_, key) => {
+      if (!allowedEnvNames.has(key)) {
+        throw new Error("Custom header environment variable is not allowlisted");
+      }
+      if (env[key] == null) {
+        throw new Error("Custom header environment variable is not set");
+      }
+      if (/\r|\n/.test(env[key])) {
+        throw new Error("Custom header environment variable contains invalid characters");
+      }
+      return env[key];
+    });
   }
   return resolved;
 }
 
-export function mergeCustomHeaders(baseHeaders, customHeaders) {
+export function hasCustomHeaderEnvReferences(headers) {
+  return Object.values(headers).some((value) => /\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(value));
+}
+
+export function mergeNormalizedCustomHeaders(baseHeaders, customHeaders) {
   const result = { ...baseHeaders };
-  for (const [name, value] of Object.entries(resolveCustomHeaders(customHeaders))) {
+  for (const [name, value] of Object.entries(customHeaders)) {
     for (const existing of Object.keys(result)) {
       if (existing.toLowerCase() === name.toLowerCase()) delete result[existing];
     }
     result[name] = value;
   }
   return result;
+}
+
+export function mergeCustomHeaders(baseHeaders, customHeaders) {
+  return mergeNormalizedCustomHeaders(baseHeaders, resolveCustomHeaders(customHeaders));
 }

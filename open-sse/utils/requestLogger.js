@@ -70,15 +70,15 @@ function writeJsonFile(sessionPath, filename, data) {
 }
 
 // Mask sensitive and user-configured headers before writing request logs.
-function maskSensitiveHeaders(headers) {
+export function maskSensitiveHeaders(headers) {
   if (!headers) return {};
   const masked = { ...headers };
-  const safeKeys = new Set([
-    "accept", "content-type", "user-agent", "anthropic-version", "anthropic-beta", "x-app",
-  ]);
+  // Only router-controlled transport metadata is safe to retain. Arbitrary
+  // custom header names may contain environment-derived secrets.
+  const safeKeys = new Set(["accept", "content-type"]);
   for (const key of Object.keys(masked)) {
     const lowerKey = key.toLowerCase();
-    if (!safeKeys.has(lowerKey) && !lowerKey.startsWith("x-stainless-")) {
+    if (!safeKeys.has(lowerKey)) {
       masked[key] = "[REDACTED]";
     }
   }

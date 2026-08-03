@@ -17,6 +17,7 @@ import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { mergeCustomHeaders } from "../../../../../open-sse/utils/customHeaders.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -180,7 +181,10 @@ async function fetchCompatibleModelIds(connection) {
     const timeoutId = setTimeout(() => controller.abort(), 5000);
     const response = await fetch(url, {
       method: "GET",
-      headers: { ...headers, [INTERNAL_MODELS_FETCH_HEADER]: "1" },
+      headers: {
+        ...mergeCustomHeaders(headers, connection.providerSpecificData?.headers),
+        [INTERNAL_MODELS_FETCH_HEADER]: "1",
+      },
       cache: "no-store",
       signal: controller.signal,
     });
@@ -198,7 +202,8 @@ async function fetchCompatibleModelIds(connection) {
           .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "")
       )
     );
-  } catch {
+  } catch (error) {
+    console.warn(`Failed to discover models for ${connection.provider}:`, error.message);
     return [];
   }
 }

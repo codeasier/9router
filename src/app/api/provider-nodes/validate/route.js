@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { mergeCustomHeaders } from "../../../../../open-sse/utils/customHeaders.js";
+import { hasCustomHeaderEnvReferences, mergeNormalizedCustomHeaders, normalizeCustomHeaders } from "../../../../../open-sse/utils/customHeaders.js";
 import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
 import { isLocalRequest } from "@/dashboardGuard";
 
@@ -56,13 +56,20 @@ const getChatErrorMessage = (status) => {
 export async function POST(request) {
   try {
     const body = await request.json();
-     const { baseUrl, apiKey, type, modelId, headers } = body;
-     let customHeaders;
-     try {
-       customHeaders = mergeCustomHeaders({}, headers);
-     } catch (error) {
-       return NextResponse.json({ valid: false, error: error.message }, { status: 400 });
-     }
+    const { baseUrl, apiKey, type, modelId, headers } = body;
+    let customHeaders;
+    try {
+      // Inline validation data is untrusted, so never expand server environment variables here.
+      customHeaders = normalizeCustomHeaders(headers);
+    } catch (error) {
+      return NextResponse.json({ valid: false, error: error.message }, { status: 400 });
+    }
+    if (hasCustomHeaderEnvReferences(customHeaders)) {
+      return NextResponse.json({
+        valid: false,
+        error: "Environment-variable headers can only be checked after saving the provider",
+      }, { status: 400 });
+    }
 
     if (!baseUrl || !apiKey) {
       return NextResponse.json({ error: "Base URL and API key required" }, { status: 400 });
@@ -90,12 +97,12 @@ export async function POST(request) {
       }
       const embedRes = await fetchWithTimeout(`${normalizedBase}/embeddings`, {
         method: "POST",
-         headers: mergeCustomHeaders({
-           "Authorization": `Bearer ${apiKey}`,
-           "Content-Type": "application/json"
-         }, customHeaders),
-         body: JSON.stringify({ model: modelId.trim(), input: "ping" })
-       });
+        headers: mergeNormalizedCustomHeaders({
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        }, customHeaders),
+        body: JSON.stringify({ model: modelId.trim(), input: "ping" })
+      });
       if (embedRes.ok) {
         const data = await embedRes.json().catch(() => null);
         const dims = Array.isArray(data?.data?.[0]?.embedding) ? data.data[0].embedding.length : null;
@@ -122,11 +129,11 @@ export async function POST(request) {
       const modelsUrl = `${normalizedBase}/models`;
       const res = await fetchWithTimeout(modelsUrl, {
         method: "GET",
-         headers: mergeCustomHeaders({
-           "x-api-key": apiKey,
-           "anthropic-version": "2023-06-01",
-           "Authorization": `Bearer ${apiKey}`
-         }, customHeaders)
+        headers: mergeNormalizedCustomHeaders({
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "Authorization": `Bearer ${apiKey}`
+        }, customHeaders)
       });
 
       if (res.ok) return NextResponse.json({ valid: true });
@@ -140,12 +147,12 @@ export async function POST(request) {
       if (modelId) {
         const chatRes = await fetchWithTimeout(`${normalizedBase}/chat/completions`, {
           method: "POST",
-           headers: mergeCustomHeaders({
-             "Authorization": `Bearer ${apiKey}`,
-             "Content-Type": "application/json",
-             "x-api-key": apiKey,
-             "anthropic-version": "2023-06-01"
-           }, customHeaders),
+          headers: mergeNormalizedCustomHeaders({
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01"
+          }, customHeaders),
           body: JSON.stringify({
             model: modelId,
             messages: [{ role: "user", content: "ping" }],
@@ -168,7 +175,7 @@ export async function POST(request) {
     // OpenAI Compatible Validation (Default)
     const modelsUrl = `${baseUrl.replace(/\/$/, "")}/models`;
     const res = await fetchWithTimeout(modelsUrl, {
-       headers: mergeCustomHeaders({ "Authorization": `Bearer ${apiKey}` }, customHeaders),
+      headers: mergeNormalizedCustomHeaders({ "Authorization": `Bearer ${apiKey}` }, customHeaders),
     });
 
     if (res.ok) return NextResponse.json({ valid: true });
@@ -182,7 +189,7 @@ export async function POST(request) {
     if (modelId) {
       const chatRes = await fetchWithTimeout(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
-        headers: mergeCustomHeaders({
+        headers: mergeNormalizedCustomHeaders({
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json"
         }, customHeaders),
