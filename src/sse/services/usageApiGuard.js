@@ -17,42 +17,71 @@ const CONCURRENT_QUEUE_TIMEOUT_MS = 1000;
 
 if (!global._usageApiState) {
   global._usageApiState = {
-    rate: new Map(), // apiKeyId -> { count, windowStart }
+    rate: new Map(), // apiKeyId -> { timestamps: number[] }
     cache: new Map(), // key -> { expiresAt, value }
     cacheOrder: [],   // insertion order for LRU eviction
     inflight: 0,
     waiters: [],
+    lastRatePrune: 0,
   };
 }
 const state = global._usageApiState;
 
 // ─── Rate limiter ────────────────────────────────────────────────────────
+// True sliding window: keeps the request timestamps for the last
+// RATE_LIMIT_WINDOW_MS per apiKeyId, so 60 requests at t=59s + 60 at t=60s
+// are rejected (120 within a rolling minute). Entries are pruned once per
+// window and bounded so the Map cannot grow without limit.
 // Returns { ok, retryAfterMs } — callers translate ok=false into 429 with a
 // Retry-After header.
 export function checkRateLimit(apiKeyId, now = Date.now()) {
   if (!apiKeyId) return { ok: false, retryAfterMs: RATE_LIMIT_WINDOW_MS };
-  const entry = state.rate.get(apiKeyId);
-  if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
-    state.rate.set(apiKeyId, { count: 1, windowStart: now });
-    return { ok: true, retryAfterMs: 0 };
+  maybePruneRateEntries(now);
+  let entry = state.rate.get(apiKeyId);
+  if (!entry) {
+    entry = { timestamps: [] };
+    state.rate.set(apiKeyId, entry);
   }
-  if (entry.count < RATE_LIMIT_MAX) {
-    entry.count += 1;
+  const ts = entry.timestamps;
+  // Drop requests that fell out of the rolling window.
+  while (ts.length && now - ts[0] >= RATE_LIMIT_WINDOW_MS) ts.shift();
+  if (ts.length < RATE_LIMIT_MAX) {
+    ts.push(now);
     return { ok: true, retryAfterMs: 0 };
   }
   return {
     ok: false,
-    retryAfterMs: Math.max(1, entry.windowStart + RATE_LIMIT_WINDOW_MS - now),
+    retryAfterMs: Math.max(1, RATE_LIMIT_WINDOW_MS - (now - ts[0])),
   };
 }
 
-// Test/observability helper — never invoked in the hot path.
+// Expire idle entries once per window, and hard-cap the Map as a safety net
+// against pathological key rotation. O(rate.size) once per window is cheap.
+function maybePruneRateEntries(now) {
+  if (now - state.lastRatePrune < RATE_LIMIT_WINDOW_MS) return;
+  state.lastRatePrune = now;
+  for (const [id, entry] of state.rate) {
+    if (!entry.timestamps.length || now - entry.timestamps[entry.timestamps.length - 1] >= RATE_LIMIT_WINDOW_MS) {
+      state.rate.delete(id);
+    }
+  }
+  if (state.rate.size > 10000) {
+    state.rate.clear();
+  }
+}
+
+// Test/observability helpers — never invoked in the hot path.
 export function _resetUsageApiState() {
   state.rate.clear();
   state.cache.clear();
   state.cacheOrder.length = 0;
   state.inflight = 0;
   state.waiters.length = 0;
+  state.lastRatePrune = 0;
+}
+
+export function _rateMapSize() {
+  return state.rate.size;
 }
 
 // ─── Response cache ──────────────────────────────────────────────────────

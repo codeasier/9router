@@ -273,6 +273,30 @@ describe("/v1/usage — aggregation correctness", () => {
     expect(body.total.requests).toBe(2);
     expect(body.total.promptTokens).toBe(6000);
   });
+
+  it("byDay includes DST transition days in the client timezone", async () => {
+    const k = await makeKey("dst");
+    // America/New_York spring-forward day is 2026-03-08 (a 23h calendar day).
+    // A row on the transition day itself plus one on each adjacent day.
+    await saveUsageRow({ apiKey: k.key, timestamp: "2026-03-07T12:00:00Z", model: "gpt-4", promptTokens: 1, completionTokens: 1 });
+    await saveUsageRow({ apiKey: k.key, timestamp: "2026-03-08T12:00:00Z", model: "gpt-4", promptTokens: 5, completionTokens: 5 });
+    await saveUsageRow({ apiKey: k.key, timestamp: "2026-03-09T12:00:00Z", model: "gpt-4", promptTokens: 2, completionTokens: 2 });
+
+    const { GET } = await import("@/app/api/v1/usage/route.js");
+    // Sampling phase at 04:30Z used to skip the transition day entirely.
+    const url =
+      "http://localhost/v1/usage?start=2026-03-07T04:30:00Z&end=2026-03-10T04:30:00Z&timezone=America/New_York";
+    const body = await (await call(GET, url, { authorization: `Bearer ${k.key}` })).json();
+
+    const dates = body.byDay.map((d) => d.date);
+    expect(dates).toContain("2026-03-07");
+    expect(dates).toContain("2026-03-08");
+    expect(dates).toContain("2026-03-09");
+    const t8 = body.byDay.find((d) => d.date === "2026-03-08");
+    expect(t8.requests).toBe(1);
+    expect(t8.promptTokens).toBe(5);
+    expect(body.total.requests).toBe(3);
+  });
 });
 
 describe("/v1/usage — cache and rate limit", () => {
@@ -334,6 +358,44 @@ describe("/v1/usage — cache and rate limit", () => {
     for (let i = 0; i < 61; i++) checkRateLimit(a);
     expect(checkRateLimit(a).ok).toBe(false);
     expect(checkRateLimit(b).ok).toBe(true);
+  });
+
+  it("rate limiter enforces a true sliding window", async () => {
+    const { checkRateLimit, USAGE_API_LIMITS, _resetUsageApiState } = await import(
+      "@/sse/services/usageApiGuard.js"
+    );
+    _resetUsageApiState();
+    const id = "sliding";
+    const MAX = USAGE_API_LIMITS.RATE_LIMIT_MAX;
+
+    // 60 requests at t=0 all pass; the 61st in the same instant is blocked.
+    for (let i = 0; i < MAX; i++) expect(checkRateLimit(id, 0).ok).toBe(true);
+    expect(checkRateLimit(id, 0).ok).toBe(false);
+
+    // Still blocked near the end of the window (the t=0 burst hasn't aged out).
+    expect(checkRateLimit(id, 59000).ok).toBe(false);
+
+    // Exactly one window later the oldest requests have aged out.
+    expect(checkRateLimit(id, 60000).ok).toBe(true);
+
+    // A new burst is again capped at MAX within any rolling window.
+    for (let i = 1; i < MAX; i++) expect(checkRateLimit(id, 60000).ok).toBe(true);
+    expect(checkRateLimit(id, 60001).ok).toBe(false);
+  });
+
+  it("rate limiter prunes idle entries so the map stays bounded", async () => {
+    const { checkRateLimit, _rateMapSize, _resetUsageApiState } = await import(
+      "@/sse/services/usageApiGuard.js"
+    );
+    _resetUsageApiState();
+    checkRateLimit("idle-1", 0);
+    checkRateLimit("idle-2", 0);
+    checkRateLimit("idle-3", 0);
+    expect(_rateMapSize()).toBe(3);
+
+    // A request two windows later triggers the periodic prune — idle keys go.
+    checkRateLimit("active", 120000);
+    expect(_rateMapSize()).toBe(1);
   });
 });
 

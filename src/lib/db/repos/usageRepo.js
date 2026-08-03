@@ -960,18 +960,22 @@ export async function getUsageForApiKey({ apiKey, startMs, endMs, timeZone }) {
 }
 
 // Enumerate YYYY-MM-DD keys covering [startMs, endMs) in the target tz.
-// Pure JS (uses Intl.DateTimeFormat per iteration) so it correctly handles
-// DST shifts within the window. Cheap for windows <= MAX_USAGE_QUERY_DAYS.
+// Walks the window in 24h UTC steps and probes BOTH the step instant and
+// +12h. A local calendar day is 23–25h long (DST transitions), so a 12h
+// sample spacing guarantees every local day in the window is visited —
+// otherwise a spring-forward day can be silently skipped when the step
+// phase falls inside the shifted hour.
 function enumerateDateKeysInWindow(startMs, endMs, timeZone) {
   const keys = [];
   const seen = new Set();
-  // Step in 1-day UTC increments and re-format under the target tz — avoids
-  // wrestling with non-UTC date arithmetic.
   for (let t = startMs; t < endMs; t += 86400000) {
-    const key = dateKeyInTimezone(new Date(t), timeZone);
-    if (!seen.has(key)) {
-      seen.add(key);
-      keys.push(key);
+    for (const probe of [t, t + 43200000]) {
+      if (probe >= endMs) break;
+      const key = dateKeyInTimezone(new Date(probe), timeZone);
+      if (!seen.has(key)) {
+        seen.add(key);
+        keys.push(key);
+      }
     }
   }
   // Always include the end-exclusive boundary date so a partial final day
