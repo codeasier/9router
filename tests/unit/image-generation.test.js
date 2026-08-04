@@ -636,6 +636,19 @@ describe("handleImageGenerationCore", () => {
       });
     });
 
+    it("maps the compatibility cfg field to cfg_scale", async () => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(successBody), { status: 200 })
+      );
+
+      const result = await generate({ cfg: 1.5 });
+
+      expect(result.success).toBe(true);
+      const request = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(request.cfg_scale).toBe(1.5);
+      expect(request).not.toHaveProperty("cfg");
+    });
+
     it.each(["1024x1024", "768x1360", "896x1184", "1360x768", "1184x896"])(
       "forwards documented size %s unchanged",
       async (size) => {

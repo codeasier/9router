@@ -249,7 +249,7 @@ export function GenericExampleCard({ providerId, kind }) {
           <Row label="Model">
             <input
               value={selectedModel}
-              onChange={(e) => handleModelChange(e.target.value)}
+              onChange={(e) => setSelectedModel(e.target.value)}
               placeholder="Enter model id (provider-specific)"
               className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary font-mono"
             />

@@ -18,6 +18,7 @@ function isCompleteField(field) {
 }
 
 export function resolveParamFields(globalFields = [], model) {
+  if (!model) return globalFields;
   if (!Array.isArray(model?.params)) return [];
 
   const globalByKey = new Map(globalFields.map((field) => [field.key, field]));
