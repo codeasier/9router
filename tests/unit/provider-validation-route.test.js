@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const providerMap = vi.hoisted(() => ({}));
+const getProviderNodeById = vi.hoisted(() => vi.fn());
 
 vi.mock("next/server", () => ({
   NextResponse: {
@@ -8,13 +9,13 @@ vi.mock("next/server", () => ({
   },
 }));
 
-vi.mock("@/models", () => ({ getProviderNodeById: vi.fn() }));
+vi.mock("@/models", () => ({ getProviderNodeById }));
 
 vi.mock("@/shared/constants/providers", () => ({
   AI_PROVIDERS: providerMap,
   isAnthropicCompatibleProvider: () => false,
   isCustomEmbeddingProvider: () => false,
-  isOpenAICompatibleProvider: () => false,
+  isOpenAICompatibleProvider: (provider) => provider === "openai-compatible-test",
 }));
 
 vi.mock("open-sse/config/providerModels.js", () => ({
@@ -67,6 +68,7 @@ describe("provider validation route media probes", () => {
       },
     };
     global.fetch = vi.fn();
+    getProviderNodeById.mockReset();
   });
 
   afterEach(() => {
@@ -92,6 +94,25 @@ describe("provider validation route media probes", () => {
       signal: expect.any(AbortSignal),
     });
     expect(fetch.mock.calls[0][0]).not.toBe(STEP_PLAN_GENERATION_URL);
+  });
+
+  it("applies stored custom headers when validating a compatible provider", async () => {
+    getProviderNodeById.mockResolvedValue({
+      baseUrl: "https://compatible.example/v1",
+      headers: { "User-Agent": "undici", "X-Tenant": "tenant-a" },
+    });
+    fetch.mockResolvedValue({ ok: true });
+
+    const body = await responseBody(await POST(requestFor("openai-compatible-test", "custom-key")));
+
+    expect(body).toEqual({ valid: true, error: null });
+    expect(fetch).toHaveBeenCalledWith("https://compatible.example/v1/models", {
+      headers: {
+        Authorization: "Bearer custom-key",
+        "User-Agent": "undici",
+        "X-Tenant": "tenant-a",
+      },
+    });
   });
 
   it.each([200, 204, 299])("accepts Step Plan validation status %s", async (status) => {
