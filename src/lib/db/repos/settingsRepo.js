@@ -61,6 +61,7 @@ const DEFAULT_SETTINGS = {
   pxpipeAutoInstall: true,
   pxpipeMinChars: 25000,
   pxpipeTimeoutMs: 15000,
+  codexResetCreditAutoUseMinutes: 0,
 };
 
 async function readRaw() {

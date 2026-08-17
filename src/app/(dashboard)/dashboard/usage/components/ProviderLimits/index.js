@@ -32,6 +32,8 @@ import {
   CLAUDE_REFRESH_INTERVAL_MS,
   DEPLETED_QUOTA_THRESHOLD,
   AUTO_REFRESH_STORAGE_KEY,
+  DEFAULT_CODEX_RESET_AUTO_USE_MINUTES,
+  normalizeCodexResetAutoUseMinutes,
   CONNECTIONS_PAGE_SIZE,
   ACCOUNT_PAGE_SIZE_OPTIONS,
   ACCOUNT_PAGE_SIZE_MAX,
@@ -131,6 +133,8 @@ export default function ProviderLimits() {
   const [loading, setLoading] = useState({});
   const [errors, setErrors] = useState({});
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [codexResetAutoUseMinutes, setCodexResetAutoUseMinutes] = useState(0);
+  const [codexResetAutoUseInput, setCodexResetAutoUseInput] = useState(String(DEFAULT_CODEX_RESET_AUTO_USE_MINUTES));
   const [autoPingMaps, setAutoPingMaps] = useState({ claude: {}, codex: {} });
   const [lastUpdated, setLastUpdated] = useState(null);
   const [hasHydratedAutoRefresh, setHasHydratedAutoRefresh] = useState(false);
@@ -279,6 +283,7 @@ export default function ProviderLimits() {
         [connectionId]: quotaEntry,
       }));
       setQuotaCache(connectionId, quotaEntry);
+      return quotaEntry;
     } catch (error) {
       console.error(
         `[ProviderLimits] Error fetching quota for ${provider} (${connectionId}):`,
@@ -547,9 +552,29 @@ export default function ProviderLimits() {
           codex: s?.codexAutoPing?.connections || {},
         });
         setQuotaVisibility(s?.quotaVisibility || {});
+        const minutes = normalizeCodexResetAutoUseMinutes(s?.codexResetCreditAutoUseMinutes);
+        setCodexResetAutoUseMinutes(minutes);
+        setCodexResetAutoUseInput(String(minutes || DEFAULT_CODEX_RESET_AUTO_USE_MINUTES));
       })
       .catch(() => {});
   }, []);
+
+  const updateCodexResetAutoUse = useCallback(async (minutes) => {
+    const normalized = normalizeCodexResetAutoUseMinutes(minutes);
+    const previous = codexResetAutoUseMinutes;
+    setCodexResetAutoUseMinutes(normalized);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexResetCreditAutoUseMinutes: normalized }),
+      });
+      if (!response.ok) throw new Error("Failed to update Codex reset-credit auto-use");
+    } catch (error) {
+      console.error("Error updating Codex reset-credit auto-use:", error);
+      setCodexResetAutoUseMinutes(previous);
+    }
+  }, [codexResetAutoUseMinutes]);
 
   const toggleAutoPing = useCallback(async (connectionId, provider, on) => {
     const settingsKey = AUTO_PING_SETTINGS_KEYS[provider];
@@ -918,18 +943,67 @@ export default function ProviderLimits() {
           </select>
 
           {providerFilter === "codex" && (
-            <select
-              value={quotaSortMode}
-              onChange={(event) => setQuotaSortMode(event.target.value)}
-              className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
-              aria-label="Sort Codex quotas by remaining"
-            >
-              {QUOTA_SORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <>
+              <select
+                value={quotaSortMode}
+                onChange={(event) => setQuotaSortMode(event.target.value)}
+                className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
+                aria-label="Sort Codex quotas by remaining"
+              >
+                {QUOTA_SORT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <div
+                className={`flex h-8 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${codexResetAutoUseMinutes > 0 ? "border-primary/30 bg-primary/5 text-primary" : "border-black/10 text-text-muted dark:border-white/10"}`}
+                title="Server-side protection that uses the earliest-expiring Codex reset credit before it expires"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (codexResetAutoUseMinutes > 0) {
+                      updateCodexResetAutoUse(0);
+                    } else {
+                      const minutes = normalizeCodexResetAutoUseMinutes(codexResetAutoUseInput)
+                        || DEFAULT_CODEX_RESET_AUTO_USE_MINUTES;
+                      setCodexResetAutoUseInput(String(minutes));
+                      updateCodexResetAutoUse(minutes);
+                    }
+                  }}
+                  className="flex items-center gap-1"
+                  aria-pressed={codexResetAutoUseMinutes > 0}
+                  aria-label="Toggle automatic Codex reset credit use"
+                >
+                  <span className="material-symbols-outlined text-[15px]">
+                    {codexResetAutoUseMinutes > 0 ? "autoplay" : "motion_photos_off"}
+                  </span>
+                  <span className="hidden lg:inline">Auto-use reset</span>
+                </button>
+                {codexResetAutoUseMinutes > 0 && (
+                  <label className="flex items-center gap-1 border-l border-primary/20 pl-1">
+                    <input
+                      type="number"
+                      min="1"
+                      max="10080"
+                      step="1"
+                      value={codexResetAutoUseInput}
+                      onChange={(event) => setCodexResetAutoUseInput(event.target.value)}
+                      onBlur={() => {
+                        const minutes = normalizeCodexResetAutoUseMinutes(codexResetAutoUseInput)
+                          || DEFAULT_CODEX_RESET_AUTO_USE_MINUTES;
+                        setCodexResetAutoUseInput(String(minutes));
+                        updateCodexResetAutoUse(minutes);
+                      }}
+                      className="h-6 w-12 rounded border border-primary/20 bg-transparent px-1 text-right text-xs tabular-nums outline-none"
+                      aria-label="Minutes before Codex reset credit expiry"
+                    />
+                    <span>min</span>
+                  </label>
+                )}
+              </div>
+            </>
           )}
 
           <button

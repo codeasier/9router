@@ -6,6 +6,7 @@ import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from
 import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-to-commandcode.js";
 import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
+import { mergeCustomHeaders } from "../../../../../open-sse/utils/customHeaders.js";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -71,13 +72,16 @@ async function probeMediaProvider(provider, apiKey) {
     default: return null;
   }
 
-  const method = cfg.method || "POST";
-  const res = await fetch(cfg.baseUrl, {
+  const hasValidationEndpoint = !!cfg.validateUrl;
+  const url = hasValidationEndpoint ? cfg.validateUrl : cfg.baseUrl;
+  const method = hasValidationEndpoint ? (cfg.validateMethod || "GET") : (cfg.method || "POST");
+  const res = await fetch(url, {
     method,
     headers,
     body: method === "GET" ? undefined : JSON.stringify({ input: "ping", text: "ping", prompt: "ping", model: getDefaultModel(provider) || "test" }),
     signal: AbortSignal.timeout(8000),
   });
+  if (hasValidationEndpoint) return res.status >= 200 && res.status < 300;
   return res.status !== 401 && res.status !== 403;
 }
 
@@ -105,7 +109,7 @@ export async function POST(request) {
         }
         const modelsUrl = `${node.baseUrl?.replace(/\/$/, "")}/models`;
         const res = await fetch(modelsUrl, {
-          headers: { "Authorization": `Bearer ${apiKey}` },
+          headers: mergeCustomHeaders({ "Authorization": `Bearer ${apiKey}` }, node.headers),
         });
         isValid = res.ok;
         return NextResponse.json({
@@ -122,7 +126,7 @@ export async function POST(request) {
         }
         const baseUrl = node.baseUrl?.replace(/\/$/, "");
         const modelsRes = await fetch(`${baseUrl}/models`, {
-          headers: { "Authorization": `Bearer ${apiKey}` },
+          headers: mergeCustomHeaders({ "Authorization": `Bearer ${apiKey}` }, node.headers),
         });
         if (modelsRes.ok) {
           return NextResponse.json({ valid: true });
@@ -134,7 +138,10 @@ export async function POST(request) {
         // Fallback: probe /embeddings with a common test model — many providers lack /models
         const embedRes = await fetch(`${baseUrl}/embeddings`, {
           method: "POST",
-          headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          headers: mergeCustomHeaders(
+            { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+            node.headers
+          ),
           body: JSON.stringify({ model: "test", input: "ping" }),
         });
         // 401/403 = bad key; anything else (including 400 "model not found") means key works
@@ -161,12 +168,12 @@ export async function POST(request) {
 
         const res = await fetch(messagesUrl, {
           method: "POST",
-          headers: {
+          headers: mergeCustomHeaders({
             "x-api-key": apiKey,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
             "Authorization": `Bearer ${apiKey}`,
-          },
+          }, node.headers),
           body: JSON.stringify({
             model,
             max_tokens: 1,
