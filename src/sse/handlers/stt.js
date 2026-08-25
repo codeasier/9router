@@ -9,6 +9,7 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import * as log from "../utils/logger.js";
+import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 // Providers requiring credentials for STT
 const CREDENTIALED_PROVIDERS = new Set(
@@ -29,13 +30,21 @@ export async function handleStt(request) {
   log.request("POST", `/v1/audio/transcriptions | ${modelStr}`);
 
   const settings = await getSettings();
+  const apiKey = extractApiKey(request);
   if (settings.requireApiKey) {
-    const apiKey = extractApiKey(request);
     if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
     const valid = await isValidApiKey(apiKey);
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
+  // Per-key policy guard (entry)
+  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  if (!policyGuard.ok) return policyGuard.response;
+
+  return policyGuard.wrap(await handleSttInner(formData, modelStr, apiKey));
+}
+
+async function handleSttInner(formData, modelStr, apiKey) {
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!formData.get("file")) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: file");
 
@@ -44,6 +53,10 @@ export async function handleStt(request) {
 
   const { provider, model } = modelInfo;
   log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
+
+  // Per-attempt provider budget check
+  const budgetReject = await checkProviderBudgetResponse(apiKey, provider);
+  if (budgetReject) return budgetReject;
 
   // noAuth providers
   if (!CREDENTIALED_PROVIDERS.has(provider)) {
