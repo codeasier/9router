@@ -9,7 +9,7 @@ import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthW
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
-import { protocolOptionsForModel } from "open-sse/services/modelOverrides.js";
+import { applyModelOverridePatch, protocolOptionsForModel } from "open-sse/services/modelOverrides.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
@@ -67,6 +67,7 @@ export default function ProviderDetailPage() {
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [modelOverrides, setModelOverrides] = useState({});
+  const modelOverridesRef = useRef({});
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [liveModels, setLiveModels] = useState([]);
@@ -318,7 +319,9 @@ export default function ProviderDetailPage() {
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
-      setModelOverrides(settingsData.modelOverrides || {});
+      const loadedOverrides = settingsData.modelOverrides || {};
+      modelOverridesRef.current = loadedOverrides;
+      setModelOverrides(loadedOverrides);
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
       setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
@@ -438,22 +441,18 @@ export default function ProviderDetailPage() {
 
   const saveModelOverride = async (modelId, patch) => {
     const key = overrideKey(modelId);
-    let next;
-    setModelOverrides((prev) => {
-      next = { ...prev };
-      const entry = { ...(next[key] || {}), ...patch };
-      if (!entry.thinking || entry.thinking === "auto") delete entry.thinking;
-      if (!entry.protocol || entry.protocol === "auto") delete entry.protocol;
-      if (Object.keys(entry).length === 0) delete next[key];
-      else next[key] = entry;
-      return next;
-    });
+    const next = applyModelOverridePatch(modelOverridesRef.current, key, patch);
+    modelOverridesRef.current = next;
+    setModelOverrides(next);
     try {
-      await fetch("/api/settings", {
+      const res = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ modelOverrides: next }),
       });
+      if (!res.ok) {
+        console.log("Error saving model override:", await res.text());
+      }
     } catch (error) {
       console.log("Error saving model override:", error);
     }

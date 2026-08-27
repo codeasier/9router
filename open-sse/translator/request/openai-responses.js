@@ -299,13 +299,14 @@ function buildReasoningInputItem(msg) {
  * Convert OpenAI Chat Completions to OpenAI Responses API format
  */
 export function openaiToOpenAIResponsesRequest(model, body, stream, credentials) {
+  const wantStream = stream !== false;
   // Body already in Responses API format (e.g. Cursor CLI calling /chat/completions with input[])
-  if (body.input) return { ...body, model, stream: true };
+  if (body.input) return { ...body, model, stream: wantStream };
 
   const result = {
     model,
     input: [],
-    stream: true,
+    stream: wantStream,
     store: false
   };
 
@@ -414,9 +415,11 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     });
   }
 
-  // Pass through other relevant fields
+  // Pass through other relevant fields.
+  // Responses rejects Chat Completions `max_tokens` / `max_completion_tokens`.
   if (body.temperature !== undefined) result.temperature = body.temperature;
-  if (body.max_tokens !== undefined) result.max_tokens = body.max_tokens;
+  const maxOutput = body.max_output_tokens ?? body.max_tokens ?? body.max_completion_tokens;
+  if (maxOutput !== undefined) result.max_output_tokens = maxOutput;
   if (body.top_p !== undefined) result.top_p = body.top_p;
   if (body.reasoning !== undefined) result.reasoning = body.reasoning;
   if (body.reasoning_effort !== undefined) result.reasoning = { effort: body.reasoning_effort, summary: "auto" };
