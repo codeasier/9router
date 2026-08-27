@@ -335,7 +335,8 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   if (!body || typeof body !== "object") return body;
 
   const { cleanModel, override } = parseSuffix(model);
-  const cfg = override || intent || extractThinking(body);
+  // Gateway-forced intent (modelOverrides) beats the client suffix and body.
+  const cfg = (intent?.force ? intent : null) || override || intent || extractThinking(body);
   const caps = getCapabilitiesForModel(provider, cleanModel);
 
   // Model cannot reason → strip any stray thinking fields.

@@ -182,6 +182,16 @@ describe("applyThinking per provider format", () => {
     const out = apply("openai", "gpt-5.6-sol", { reasoning_effort: "max" }, "kiro");
     expect(out.reasoning_effort).toBe("xhigh");
   });
+  it("forced gateway intent beats a client thinking suffix", () => {
+    const body = { reasoning_effort: "low" };
+    applyThinking("openai", "gpt-5(high)", body, "openai", { mode: "level", level: "minimal", force: true });
+    expect(body.reasoning_effort).toBe("minimal");
+  });
+  it("unforced intent still loses to a client thinking suffix", () => {
+    const body = { reasoning_effort: "low" };
+    applyThinking("openai", "gpt-5(high)", body, "openai", { mode: "level", level: "minimal" });
+    expect(body.reasoning_effort).toBe("high");
+  });
 });
 
 describe("extractReasoningText (response shapes)", () => {
