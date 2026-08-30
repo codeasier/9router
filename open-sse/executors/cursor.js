@@ -18,7 +18,8 @@ import { SSE_DONE, SSE_HEADERS } from "../utils/sseConstants.js";
 import { chatChunkSse, sseChunk } from "../utils/sse.js";
 import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_BLOCK } from "../translator/schema/index.js";
-import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { proxyAwareFetch, resolveOutboundProxyUrl } from "../utils/proxyFetch.js";
+import { connectHttp2 } from "../utils/http2Connect.js";
 import zlib from "zlib";
 import crypto from "crypto";
 
@@ -50,6 +51,25 @@ const AGENT_RUN_PATH = "/agent.v1.AgentService/Run";
 const PROTOBUF_LEN = 2;
 const PROTOBUF_VARINT = 0;
 
+function maskProxyUrl(proxyUrl) {
+  try {
+    const parsed = new URL(proxyUrl);
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`;
+  } catch {
+    return "proxy";
+  }
+}
+
+function emptyCompletionPayload() {
+  return {
+    error: {
+      message: "Cursor AgentService returned HTTP 200 with an empty stream",
+      type: "empty_completion",
+      code: "empty_completion",
+    },
+  };
+}
+
 function concatBuffers(...parts) {
   const length = parts.reduce((total, part) => total + part.length, 0);
   const result = new Uint8Array(length);
@@ -63,7 +83,6 @@ function concatBuffers(...parts) {
 
 const agentString = (field, value) => encodeField(field, PROTOBUF_LEN, value);
 const agentMessage = (field, value) => encodeField(field, PROTOBUF_LEN, value);
-const agentBool = (field, value) => encodeField(field, PROTOBUF_VARINT, value ? 1 : 0);
 
 function textFromContent(content) {
   if (typeof content === "string") return content;
@@ -154,8 +173,9 @@ export function buildAgentRunFrame(messages, model, tools = [], reasoningEffort 
       agentString(2, effortValue),
     ))
     : null;
+  // RequestedModel field 7 is Bedrock credentials, not a boolean flag.
   const requestedModel = concatBuffers(
-    agentString(1, model), agentBool(7, true),
+    agentString(1, model),
     ...(parameter ? [parameter] : []),
   );
   // ModelDetails (field 3): thinking variants (Composer, Grok, *-thinking)
@@ -247,26 +267,63 @@ export function encodeKvClientMessage(kvId, resultField, resultPayload, metadata
   return wrapConnectRPCFrame(agentMessage(3, concatBuffers(...parts)));
 }
 
-// The AgentService h2 path bypasses proxyAwareFetch (Node http2 duplex, no
-// dispatcher), so the strict-proxy guarantee that proxyFetch enforces for
-// regular fetch never applies here. Until h2 proxying lands (see #3276),
-// honor just the policy side: when a proxy is intended AND strict AND cannot
-// be resolved for this request, fail closed instead of silently opening a
-// direct socket that exposes the host's real IP — the exact leak strict mode
-// exists to prevent (#4333). Non-strict callers keep today's direct behavior.
-const proxyIntentFailed = (proxyOptions) => {
+function blobStoreKey(blobId) {
+  return Buffer.from(blobId || []).toString("hex");
+}
+
+function createKvClientFrame(kvId, resultField, resultMessage, metadata) {
+  const parts = [];
+  if (Number.isFinite(kvId)) {
+    parts.push(encodeField(1, PROTOBUF_VARINT, kvId));
+  }
+  parts.push(agentMessage(resultField, resultMessage));
+  if (metadata?.length) parts.push(agentMessage(4, metadata));
+  return wrapConnectRPCFrame(agentMessage(3, concatBuffers(...parts)));
+}
+
+// AgentService field 4 (kv_server_message) is a blob store handshake.
+// Claude / GPT wait for get/set acks; ignoring them leaves only heartbeats.
+function handleKvServerMessage(kvMessage, blobStore) {
+  const kvId = kvMessage.has(1) ? kvMessage.get(1)[0].value : undefined;
+  const metadata = kvMessage.get(4)?.[0]?.value;
+  if (kvMessage.has(2)) {
+    const args = decodeMessage(kvMessage.get(2)[0].value);
+    const blobId = args.get(1)?.[0]?.value;
+    const data = blobId ? blobStore.get(blobStoreKey(blobId)) : null;
+    const result = data?.length ? agentMessage(1, data) : new Uint8Array();
+    return createKvClientFrame(kvId, 2, result, metadata);
+  }
+  if (kvMessage.has(3)) {
+    const args = decodeMessage(kvMessage.get(3)[0].value);
+    const blobId = args.get(1)?.[0]?.value;
+    const blobData = args.get(2)?.[0]?.value;
+    if (blobId && blobData) {
+      blobStore.set(blobStoreKey(blobId), Buffer.from(blobData));
+    }
+    return createKvClientFrame(kvId, 3, new Uint8Array(), metadata);
+  }
+  return null;
+}
+
+// The AgentService h2 path tunnels through a resolvable HTTP/SOCKS proxy
+// (connectHttp2). A strict proxy configuration that resolves to nothing —
+// a drained pool, a missing URL — must fail closed instead of silently
+// opening a direct socket that exposes the host's real IP, the exact leak
+// strict mode exists to prevent (#4333). Non-strict callers and relay
+// configurations keep today's behavior.
+const proxyIntentFailed = (proxyOptions, url) => {
   if (proxyOptions?.strictProxy !== true) return false;
   const proxyIntended = Boolean(
     proxyOptions?.proxyPoolId
-    || proxyOptions?.enabled === true
-    || proxyOptions?.connectionProxyEnabled === true
-    || (proxyOptions?.url || proxyOptions?.connectionProxyUrl || "").trim().length > 0,
+      || proxyOptions?.enabled === true
+      || proxyOptions?.connectionProxyEnabled === true
+      || (proxyOptions?.url || proxyOptions?.connectionProxyUrl || "").trim().length > 0,
   );
   if (!proxyIntended) return false;
   // A vercel/cloudflare-style relay rides on plain fetch, not this h2 path.
   if (proxyOptions?.vercelRelayUrl) return false;
-  // Proxy intended and strict: the h2 transport below cannot carry it.
-  return true;
+  // Strict and intended: honored only when a proxy URL actually resolves.
+  return !resolveOutboundProxyUrl(url, proxyOptions);
 };
 
 const CURSOR_STREAM_DEBUG = process.env.CURSOR_STREAM_DEBUG === "1";
@@ -539,13 +596,23 @@ export class CursorExecutor extends BaseExecutor {
    * AgentService (agent.api5.cursor.sh) is HTTP/2-only. Node's fetch/undici speaks
    * HTTP/1.1 and fails with HTTPParserError on the h2 preface — use http2 duplex.
    */
-  openAgentHttp2Stream(url, headers, signal) {
+  async openAgentHttp2Stream(url, headers, signal, proxyOptions = null, log = null) {
     if (!http2) {
       throw new Error("HTTP/2 is required for Cursor AgentService (endpoint is h2-only)");
     }
 
     const urlObj = new URL(url);
-    const client = http2.connect(`https://${urlObj.host}`);
+    // AgentService is h2-only and http2.connect() ignores every proxy setting.
+    // Cursor gates chat by client IP, so a direct session can return HTTP 200
+    // with an empty stream (see utils/http2Connect.js).
+    const proxyUrl = resolveOutboundProxyUrl(url, proxyOptions);
+    if (proxyOptions?.connectionProxyEnabled === true && !proxyUrl) {
+      throw new Error("Cursor AgentService proxy is bound but could not be resolved");
+    }
+    if (proxyUrl) {
+      log?.info?.("CURSOR_AGENT", `Run via HTTP/2 proxy ${maskProxyUrl(proxyUrl)}`);
+    }
+    const client = await connectHttp2(url, { proxyUrl });
     const chunkQueue = [];
     let waiting = null;
     let ended = false;
@@ -633,20 +700,21 @@ export class CursorExecutor extends BaseExecutor {
     };
   }
 
-  async executeAgent({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async executeAgent({ model, body, stream, credentials, signal, proxyOptions = null, log = null }) {
     const agentEndpoint = PROVIDER_OAUTH.cursor?.agentEndpoint;
     if (!agentEndpoint) throw new Error("Cursor AgentService endpoint is not configured");
 
-    // Policy guard: the h2 duplex stream below cannot ride a proxy, so a
-    // strict proxy configuration must fail closed here rather than leak the
-    // real IP on a direct socket (see proxyIntentFailed above).
-    if (proxyIntentFailed(proxyOptions)) {
+    const url = `${agentEndpoint}${AGENT_RUN_PATH}`;
+
+    // Policy guard: a strict proxy intent this transport cannot honor (nothing
+    // resolves) must fail closed here rather than leak the real IP on a
+    // direct socket (see proxyIntentFailed above).
+    if (proxyIntentFailed(proxyOptions, url)) {
       throw new Error(
         "Cursor AgentService requires a strict proxy that this HTTP/2 transport cannot honor; refusing to open a direct connection"
       );
     }
 
-    const url = `${agentEndpoint}${AGENT_RUN_PATH}`;
     const headers = this.buildHeaders(credentials);
     const requestController = new AbortController();
     if (signal?.addEventListener) {
@@ -671,15 +739,15 @@ export class CursorExecutor extends BaseExecutor {
       }
     }
 
-    const openAgentSession = (frameMessages) => {
-      const session = this.openAgentHttp2Stream(url, headers, requestController.signal);
+    const openAgentSession = async (frameMessages) => {
+      const session = await this.openAgentHttp2Stream(url, headers, requestController.signal, proxyOptions, log);
       session.write(buildAgentRunFrame(frameMessages, runModel, tools, body.reasoning_effort || body.reasoning?.effort));
       return session;
     };
 
     let session;
     try {
-      session = openAgentSession(workingMessages);
+      session = await openAgentSession(workingMessages);
     } catch (error) {
       throw new Error(`Cursor AgentService request failed: ${error.message}`);
     }
@@ -735,13 +803,14 @@ export class CursorExecutor extends BaseExecutor {
         onEvent({ type: "text", value: fallback });
       }
     };
+    const blobStore = new Map();
 
     const consume = async (onEvent) => {
       const finishTurn = () => {
         flushThinkingFallback(onEvent);
         finished = true;
         if (emittedText) onEvent({ type: "done" });
-        else onEvent({ type: "error", value: "Cursor AgentService returned an empty turn" });
+        else onEvent({ type: "error", value: emptyCompletionPayload().error });
       };
       try {
         while (!finished) {
@@ -787,18 +856,6 @@ export class CursorExecutor extends BaseExecutor {
               }
             }
 
-            // KvServerMessage (field 4): get/set blob. Ack so the stream proceeds.
-            if (serverMessage.has(4)) {
-              const kv = decodeMessage(serverMessage.get(4)[0].value);
-              const kvId = kv.get(1)?.[0]?.value || 0;
-              const metadata = kv.get(4)?.[0]?.value || null;
-              if (kv.has(2)) {
-                session.write(encodeKvClientMessage(kvId, 2, agentMessage(1, new Uint8Array()), metadata));
-              } else if (kv.has(3)) {
-                session.write(encodeKvClientMessage(kvId, 3, new Uint8Array(), metadata));
-              }
-            }
-
             // AgentService requests IDE context before producing a response.
             if (serverMessage.has(2)) {
               const execRequest = decodeMessage(serverMessage.get(2)[0].value);
@@ -839,6 +896,12 @@ export class CursorExecutor extends BaseExecutor {
                   onEvent({ type: "error", value: "Cursor AgentService requested an unsupported IDE tool" });
                 }
               }
+            }
+
+            if (serverMessage.has(4)) {
+              const kvMessage = decodeMessage(serverMessage.get(4)[0].value);
+              const reply = handleKvServerMessage(kvMessage, blobStore);
+              if (reply) session.write(reply);
             }
           });
         }
@@ -886,7 +949,7 @@ export class CursorExecutor extends BaseExecutor {
           attempt++;
           log?.info?.("CURSOR", `empty_turn on ${originalMessages.length}-message session; retry ${attempt}/${CURSOR_EMPTY_TURN_MAX_RETRIES} with tail-only frame`);
           workingMessages = tailOnlyCursorMessages(originalMessages);
-          session = openAgentSession(workingMessages);
+          session = await openAgentSession(workingMessages);
           const retryHeaders = await session.responseHeaders;
           const retryStatus = Number(retryHeaders[":status"] || 0);
           if (retryStatus !== 200) {
@@ -922,9 +985,14 @@ export class CursorExecutor extends BaseExecutor {
         else if (event.type === "done" && event.finishReason) finishReason = event.finishReason;
       });
       if (agentError) {
+        // Structured errors (empty_completion) keep their own payload and
+        // status; plain strings stay on the legacy api_error envelope.
+        const objectError = agentError && typeof agentError === "object";
         return {
-          response: new Response(JSON.stringify({ error: { message: agentError, type: "api_error" } }), {
-            status: HTTP_STATUS.BAD_REQUEST,
+          response: new Response(JSON.stringify(
+            objectError ? { error: agentError } : { error: { message: agentError, type: "api_error" } },
+          ), {
+            status: objectError ? HTTP_STATUS.BAD_GATEWAY : HTTP_STATUS.BAD_REQUEST,
             headers: { "Content-Type": "application/json" },
           }),
           url,
@@ -962,7 +1030,9 @@ export class CursorExecutor extends BaseExecutor {
         // first empty upstream turn wedges Cursor before the tail-only retry
         // can recover the session.
         runWithRetry((event) => {
+          let outputChars = 0;
           if (event.type === "text") {
+            outputChars += event.value.length;
             controller.enqueue(encoder.encode(chatChunkSse({ id: responseId, created, model, delta: { content: event.value } })));
           } else if (event.type === "thinking") {
             controller.enqueue(encoder.encode(chatChunkSse({ id: responseId, created, model, delta: { reasoning_content: event.value } })));
@@ -981,14 +1051,23 @@ export class CursorExecutor extends BaseExecutor {
           } else if (event.type === "error") {
             // An SSE error frame, not a content delta: a protocol failure must not
             // be rendered to the user as the assistant's reply, and downstream
-            // usage tracking must not record the turn as a success.
-            controller.enqueue(encoder.encode(sseChunk({ error: { message: event.value, type: "api_error" } })));
+            // usage tracking must not record the turn as a success. Structured
+            // errors (empty_completion) keep their own payload.
+            const errorPayload = event.value && typeof event.value === "object"
+              ? event.value
+              : { message: event.value, type: "api_error" };
+            controller.enqueue(encoder.encode(sseChunk({ error: errorPayload })));
             controller.enqueue(encoder.encode(SSE_DONE));
             controller.close();
           } else if (event.type === "done") {
-            controller.enqueue(encoder.encode(chatChunkSse({
-              id: responseId, created, model, delta: {},
-              finishReason: event.finishReason || "stop",
+            const usage = estimateUsage(body, outputChars, FORMATS.OPENAI);
+            controller.enqueue(encoder.encode(sseChunk({
+              id: responseId,
+              object: "chat.completion.chunk",
+              created,
+              model,
+              choices: [{ index: 0, delta: {}, finish_reason: event.finishReason || "stop" }],
+              usage,
             })));
             controller.enqueue(encoder.encode(SSE_DONE));
             controller.close();
@@ -1012,7 +1091,7 @@ export class CursorExecutor extends BaseExecutor {
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
     if (isAgentCapableRequest(body)) {
       try {
-        return await this.executeAgent({ model, body, stream, credentials, signal, log, proxyOptions });
+        return await this.executeAgent({ model, body, stream, credentials, signal, proxyOptions, log });
       } catch (error) {
         return {
           response: new Response(JSON.stringify({
