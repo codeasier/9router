@@ -215,6 +215,7 @@ exports[`GOLDEN response stream: Ollama → OpenAI (finish after tool) > tool_ca
 
 exports[`GOLDEN usage math: Claude prompt = input + cache (lock) > prompt_tokens sums input + cache_read + cache_creation 1`] = `
 {
+  "cached_tokens": 3,
   "completion_tokens": 5,
   "prompt_tokens": 15,
   "prompt_tokens_details": {
