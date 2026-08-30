@@ -240,6 +240,16 @@ describe("applyThinking per provider format", () => {
     const out = apply("gemini-cli", "gemini-3.5-flash-lite", { reasoning_effort: "medium" }, "gemini-cli");
     expect(out.generationConfig.thinkingConfig.thinkingLevel).toBe("medium");
   });
+  it("forced gateway intent beats a client thinking suffix", () => {
+    const body = { reasoning_effort: "low" };
+    applyThinking("openai", "gpt-5(high)", body, "openai", { mode: "level", level: "minimal", force: true });
+    expect(body.reasoning_effort).toBe("minimal");
+  });
+  it("unforced intent still loses to a client thinking suffix", () => {
+    const body = { reasoning_effort: "low" };
+    applyThinking("openai", "gpt-5(high)", body, "openai", { mode: "level", level: "minimal" });
+    expect(body.reasoning_effort).toBe("high");
+  });
 });
 
 describe("extractReasoningText (response shapes)", () => {

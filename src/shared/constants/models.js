@@ -6,6 +6,7 @@ export {
   isValidModel as isValidModelCore,
   findModelName,
   getModelTargetFormat,
+  getModelThinking,
   getModelStrip,
   PROVIDER_ID_TO_ALIAS,
   getModelsByProviderId,
