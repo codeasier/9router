@@ -17,6 +17,7 @@ import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
+import PolicyEditorModal from "./components/PolicyEditorModal";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +25,7 @@ export default function APIPageClient({ machineId }) {
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  const [policyEditorKey, setPolicyEditorKey] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -76,6 +78,29 @@ export default function APIPageClient({ machineId }) {
 
   // API key visibility toggle state
   const [visibleKeys, setVisibleKeys] = useState(new Set());
+
+  // Live per-key policy status (in-flight / spend / breakers), polled from /api/keys/status
+  const [keyStatuses, setKeyStatuses] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      if (document.hidden) return;
+      try {
+        const res = await fetch("/api/keys/status", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setKeyStatuses(data.statuses || {});
+      } catch { /* transient poll errors */ }
+    };
+    poll();
+    const timer = setInterval(poll, 10000);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, []);
 
   // Client-side local/remote detection (UI hint only, not a security gate)
   const [isRemoteHost, setIsRemoteHost] = useState(false);
@@ -682,6 +707,25 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
+  const handlePolicySaved = (updatedKey) => {
+    setKeys(prev => prev.map(k => (k.id === updatedKey.id ? { ...k, policy: updatedKey.policy } : k)));
+  };
+
+  const policySummary = (policy) => {
+    if (!policy) return null;
+    const parts = [];
+    if (policy.budgets?.length) {
+      parts.push(...policy.budgets.map(b => `${b.provider === "*" ? "all" : b.provider}: $${b.limitUsd}/${b.period}`));
+    }
+    if (policy.maxConcurrent) parts.push(`≤${policy.maxConcurrent} concurrent`);
+    return parts.join(" · ");
+  };
+
+  const fmtStatusUsd = (v) => {
+    if (v == null || !Number.isFinite(v)) return "0";
+    return v >= 100 ? v.toFixed(0) : v.toFixed(2);
+  };
+
   const maskKey = (fullKey) => {
     if (!fullKey || fullKey.length <= 10) return fullKey || "";
     return fullKey.slice(0, 6) + "•".repeat(fullKey.length - 10) + fullKey.slice(-4);
@@ -1039,11 +1083,53 @@ export default function APIPageClient({ machineId }) {
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
                   </p>
+                  {policySummary(key.policy) && (
+                    <p className="text-xs text-primary/80 mt-1 flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[12px]">tune</span>
+                      {policySummary(key.policy)}
+                    </p>
+                  )}
+                  {(() => {
+                    const st = keyStatuses[key.id];
+                    if (!st) return null;
+                    const breakerOpen = !!(st.breaker || st.providerBreakers?.length);
+                    return (
+                      <p className={`text-xs mt-1 flex items-center gap-2 flex-wrap ${breakerOpen ? "text-red-500" : "text-text-muted"}`}>
+                        {breakerOpen && (
+                          <span className="inline-flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[12px]">block</span>
+                            breaker open
+                          </span>
+                        )}
+                        {st.maxConcurrent ? (
+                          <span className={st.inflight >= st.maxConcurrent ? "text-red-500" : undefined}>
+                            {st.inflight}/{st.maxConcurrent} in-flight
+                          </span>
+                        ) : st.inflight > 0 ? (
+                          <span>{st.inflight} in-flight</span>
+                        ) : null}
+                        <span>today ${fmtStatusUsd(st.usage?.day)}</span>
+                        <span>week ${fmtStatusUsd(st.usage?.week)}</span>
+                        {st.budgets?.length > 0 && (
+                          <span>
+                            {st.budgets.map((b) => `${b.provider === "*" ? "all" : b.provider}: $${fmtStatusUsd(b.spentUsd)}/${fmtStatusUsd(b.limitUsd)} ${b.period}`).join(" · ")}
+                          </span>
+                        )}
+                      </p>
+                    );
+                  })()}
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPolicyEditorKey(key)}
+                    className={`p-2 rounded transition-all ${key.policy ? "text-primary hover:bg-primary/10" : "text-text-muted hover:bg-black/5 dark:hover:bg-white/5 hover:text-primary"}`}
+                    title="Configure policy (budgets / concurrency / breaker)"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">tune</span>
+                  </button>
                   <Toggle
                     size="sm"
                     checked={key.isActive ?? true}
@@ -1075,6 +1161,14 @@ export default function APIPageClient({ machineId }) {
           </div>
         )}
       </Card>
+
+      {/* Policy Editor Modal */}
+      <PolicyEditorModal
+        isOpen={!!policyEditorKey}
+        apiKeyRecord={policyEditorKey}
+        onClose={() => setPolicyEditorKey(null)}
+        onSaved={handlePolicySaved}
+      />
 
       {/* Add Key Modal */}
       <Modal

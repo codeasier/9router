@@ -3,12 +3,17 @@ import { getAdapter } from "../driver.js";
 
 function rowToKey(row) {
   if (!row) return null;
+  let policy = null;
+  if (row.policy) {
+    try { policy = JSON.parse(row.policy); } catch { policy = null; }
+  }
   return {
     id: row.id,
     key: row.key,
     name: row.name,
     machineId: row.machineId,
     isActive: row.isActive === 1 || row.isActive === true,
+    policy,
     createdAt: row.createdAt,
   };
 }
@@ -52,9 +57,10 @@ export async function updateApiKey(id, data) {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
     const merged = { ...rowToKey(row), ...data };
+    const policyJson = merged.policy != null ? JSON.stringify(merged.policy) : null;
     db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, id]
+      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, policy = ? WHERE id = ?`,
+      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, policyJson, id]
     );
     result = merged;
   });
