@@ -90,4 +90,41 @@ describe("handleChatCore per-model overrides", () => {
     expect(call.body.thinking).toEqual({ type: "enabled" });
     expect(call.body.messages?.length || call.body.input?.length).toBeGreaterThan(0);
   });
+
+  it("forces responses transport and maps max_tokens for a custom OpenCode Go model", async () => {
+    const credentials = { apiKey: "test-key", providerSpecificData: {} };
+    const body = {
+      model: "ocg/muse-spark-1.2-contributor",
+      stream: false,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "hi" }],
+    };
+
+    await handleChatCore({
+      body,
+      modelInfo: { provider: "opencode-go", model: "muse-spark-1.2-contributor" },
+      credentials,
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn() },
+      connectionId: "test-conn",
+      rtkEnabled: false,
+      cavemanEnabled: false,
+      ponytailEnabled: false,
+      modelOverrides: {
+        "opencode-go/muse-spark-1.2-contributor": { protocol: "openai-responses" },
+      },
+      clientRawRequest: {
+        endpoint: "/v1/chat/completions",
+        body,
+        headers: { accept: "application/json" },
+      },
+    });
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const call = executeMock.mock.calls[0][0];
+    expect(credentials.runtimeTransport.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
+    expect(call.body.input?.length).toBeGreaterThan(0);
+    expect(call.body.max_output_tokens).toBe(1024);
+    expect(call.body.max_tokens).toBeUndefined();
+    expect(call.body.stream).toBe(false);
+  });
 });
