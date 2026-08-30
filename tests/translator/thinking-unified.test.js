@@ -273,6 +273,16 @@ describe("applyThinking per provider format", () => {
     }, "commandcode");
     expect(out.params.reasoning_effort).toBe("max");
   });
+  it("forced gateway intent beats a client thinking suffix", () => {
+    const body = { reasoning_effort: "low" };
+    applyThinking("openai", "gpt-5(high)", body, "openai", { mode: "level", level: "minimal", force: true });
+    expect(body.reasoning_effort).toBe("minimal");
+  });
+  it("unforced intent still loses to a client thinking suffix", () => {
+    const body = { reasoning_effort: "low" };
+    applyThinking("openai", "gpt-5(high)", body, "openai", { mode: "level", level: "minimal" });
+    expect(body.reasoning_effort).toBe("high");
+  });
 });
 
 describe("extractReasoningText (response shapes)", () => {

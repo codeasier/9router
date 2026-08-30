@@ -14,7 +14,8 @@ export const MODEL_DEFAULTS = {
   kind: "llm",
   quotaFamily: "normal",
   strip: [],
-  targetFormat: null
+  targetFormat: null,
+  thinking: null
 };
 
 // Normalize a registry model entry: accept terse "id" string, fill name via regex when omitted.
@@ -37,6 +38,9 @@ export function modelStrip(model) {
 }
 export function modelTargetFormat(model) {
   return model?.targetFormat || MODEL_DEFAULTS.targetFormat;
+}
+export function modelThinking(model) {
+  return model?.thinking || MODEL_DEFAULTS.thinking;
 }
 
 // Per-model declared upstream formats (e.g. ["openai", "claude"]). Guards the
