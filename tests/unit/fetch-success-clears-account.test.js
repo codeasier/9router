@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   getCombos: vi.fn(),
   handleFetchCore: vi.fn(),
   checkAndRefreshToken: vi.fn(),
+  saveRequestUsage: vi.fn(),
+  policyRecord: null,
 }));
 
 vi.mock("@/sse/services/auth.js", () => ({
@@ -23,6 +25,7 @@ vi.mock("@/sse/services/auth.js", () => ({
 vi.mock("@/lib/localDb", () => ({
   getSettings: mocks.getSettings,
   getCombos: mocks.getCombos,
+  getApiKeyByKey: async () => mocks.policyRecord,
 }));
 
 vi.mock("open-sse/handlers/fetch/index.js", () => ({
@@ -47,13 +50,23 @@ vi.mock("@/shared/utils/ssrfGuard.js", () => ({
   assertPublicUrl: vi.fn(),
 }));
 
+vi.mock("@/lib/usageDb.js", () => ({
+  saveRequestUsage: mocks.saveRequestUsage,
+}));
+
 import { handleFetch } from "@/sse/handlers/fetch.js";
+import { _resetKeyPolicyState, _setBudgetQuery } from "@/sse/services/keyPolicy.js";
 
 describe("web fetch account state", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetKeyPolicyState();
+    _setBudgetQuery(async () => 0);
+    mocks.policyRecord = null;
+    mocks.extractApiKey.mockReturnValue(null);
     mocks.getSettings.mockResolvedValue({ requireApiKey: false });
     mocks.getCombos.mockResolvedValue([]);
+    mocks.markAccountUnavailable.mockResolvedValue({ shouldFallback: false });
     mocks.getProviderCredentials.mockResolvedValue({
       apiKey: "jina-test-key",
       connectionId: "jina-connection",
@@ -87,5 +100,57 @@ describe("web fetch account state", () => {
       expect.objectContaining({ connectionName: "Jina Test" }),
     );
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+    expect(mocks.saveRequestUsage).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "jina-reader",
+      model: "fetch",
+      connectionId: "jina-connection",
+      apiKey: null,
+      endpoint: "/v1/web/fetch",
+      costUsd: 0,
+      requestId: expect.any(String),
+      tokens: {},
+    }));
+  });
+
+  it("does not record a failed fetch attempt", async () => {
+    mocks.handleFetchCore.mockResolvedValue({
+      success: false,
+      status: 502,
+      error: "upstream failed",
+    });
+
+    const response = await handleFetch(new Request("http://localhost/v1/web/fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "jina-reader",
+        url: "https://example.com/article",
+      }),
+    }));
+
+    expect(response.status).toBe(502);
+    expect(mocks.saveRequestUsage).not.toHaveBeenCalled();
+  });
+
+  it("releases a fixed-cost reservation after a failed fetch attempt", async () => {
+    mocks.extractApiKey.mockReturnValue("client-key");
+    mocks.policyRecord = {
+      policy: { budgets: [{ provider: "tavily", limitUsd: 0.008, period: "day" }] },
+    };
+    mocks.handleFetchCore
+      .mockResolvedValueOnce({ success: false, status: 502, error: "upstream failed" })
+      .mockResolvedValue({ success: true, data: { provider: "tavily", content: { text: "ok" } } });
+    const makeRequest = () => new Request("http://localhost/v1/web/fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "tavily",
+        url: "https://example.com/article",
+      }),
+    });
+
+    expect((await handleFetch(makeRequest())).status).toBe(502);
+    expect((await handleFetch(makeRequest())).status).toBe(200);
+    expect(mocks.handleFetchCore).toHaveBeenCalledTimes(2);
   });
 });

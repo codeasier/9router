@@ -152,7 +152,7 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
  * @param {object|null} options.credentials  Provider credentials
  * @param {object}   [options.log]           Logger
  */
-export async function handleSearchCore({ body, provider, providerConfig, credentials, log }) {
+export async function handleSearchCore({ body, provider, providerConfig, credentials, log, allowChatFallback = true }) {
   const globalStartTime = Date.now();
 
   // 1. Sanitize query
@@ -191,7 +191,8 @@ export async function handleSearchCore({ body, provider, providerConfig, credent
     !NON_RETRIABLE.has(result.status || 0) &&
     Date.now() - globalStartTime < GLOBAL_TIMEOUT_MS &&
     provider.searchViaChat &&
-    providerConfig
+    providerConfig &&
+    allowChatFallback
   ) {
     log?.warn?.("SEARCH", `${provider.id} dedicated failed (${result.status}), falling back to chat-based search`);
     const fallback = await handleChatSearch({

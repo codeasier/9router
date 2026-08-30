@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -14,7 +15,8 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
 import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
-import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { saveRequestUsage } from "@/lib/usageDb.js";
+import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
 
 /**
  * Handle web fetch (URL extraction) request for the SSE/Next.js server.
@@ -37,6 +39,7 @@ export async function handleFetch(request) {
   const targetUrl = body.url;
   const format = body.format;
   const maxCharacters = body.max_characters;
+  const requestId = randomUUID();
 
   log.request("POST", `${reqUrl.pathname} | ${providerInput}`);
 
@@ -103,7 +106,7 @@ export async function handleFetch(request) {
     return policyGuard.wrap(await handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleProviderFetch(b, m, request, apiKey, settings),
+      handleSingleModel: (b, m) => handleSingleProviderFetch(b, m, apiKey, reqUrl.pathname, requestId),
       log,
       comboName: providerInput,
       comboStrategy,
@@ -111,10 +114,10 @@ export async function handleFetch(request) {
     }));
   }
 
-  return policyGuard.wrap(await handleSingleProviderFetch(body, providerInput, request, apiKey, settings));
+  return policyGuard.wrap(await handleSingleProviderFetch(body, providerInput, apiKey, reqUrl.pathname, requestId));
 }
 
-async function handleSingleProviderFetch(body, providerInput, request, apiKey, settings) {
+async function handleSingleProviderFetch(body, providerInput, apiKey, endpoint, requestId) {
   const targetUrl = body.url;
   const format = body.format;
   const maxCharacters = body.max_characters;
@@ -126,16 +129,20 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Unknown provider: ${providerInput}`);
   }
 
-  // Per-attempt provider budget check
-  const budgetReject = await checkProviderBudgetResponse(apiKey, providerId);
-  if (budgetReject) return budgetReject;
-
   const providerConfig = resolvedProvider.fetchConfig;
   if (!providerConfig) {
     log.warn("FETCH", "Provider does not support web fetch", { provider: providerId });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Provider ${providerId} does not support web fetch`);
   }
 
+  const costUsd = Number.isFinite(providerConfig.costPerQuery) && providerConfig.costPerQuery >= 0
+    ? providerConfig.costPerQuery
+    : null;
+  const budgetPolicy = await evaluateProviderBudget(apiKey, providerId, { costUsd, operation: "web fetch" });
+  if (budgetPolicy.rejectionResponse) return budgetPolicy.rejectionResponse;
+  let releaseReservation = true;
+
+  try {
   if (providerInput !== providerId) {
     log.info("ROUTING", `${providerInput} → ${providerId}`);
   } else {
@@ -155,6 +162,21 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
       log
     });
     if (result.success) {
+      if (costUsd !== null) {
+        const usageSaved = await saveRequestUsage({
+          provider: providerId,
+          model: "fetch",
+          connectionId: null,
+          apiKey,
+          endpoint,
+          tokens: {},
+          costUsd,
+          requestId,
+          timestamp: budgetPolicy.accountingTimestamp || undefined,
+          status: "success",
+        });
+        if (budgetPolicy.budgetMatched && usageSaved === false) releaseReservation = false;
+      }
       return new Response(JSON.stringify(result.data), {
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
       });
@@ -209,6 +231,21 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
 
     if (result.success) {
       await clearAccountError(credentials.connectionId, credentials);
+      if (costUsd !== null) {
+        const usageSaved = await saveRequestUsage({
+          provider: providerId,
+          model: "fetch",
+          connectionId: credentials.connectionId,
+          apiKey,
+          endpoint,
+          tokens: {},
+          costUsd,
+          requestId,
+          timestamp: budgetPolicy.accountingTimestamp || undefined,
+          status: "success",
+        });
+        if (budgetPolicy.budgetMatched && usageSaved === false) releaseReservation = false;
+      }
       return new Response(JSON.stringify(result.data), {
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
       });
@@ -225,5 +262,8 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
     }
 
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "Fetch failed");
+  }
+  } finally {
+    if (releaseReservation) budgetPolicy.releaseReservation();
   }
 }

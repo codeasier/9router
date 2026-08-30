@@ -13,7 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
-import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
@@ -90,9 +90,10 @@ export async function handleSingleModelImage(body, modelStr, { wantsStream, bina
 
   const { provider, model } = modelInfo;
 
-  // Per-attempt provider budget check
-  const budgetReject = await checkProviderBudgetResponse(apiKey, provider);
-  if (budgetReject) return budgetReject;
+  const budgetPolicy = await evaluateProviderBudget(apiKey, provider, {
+    operation: operation === "edit" ? "image edit" : "image generation",
+  });
+  if (budgetPolicy.rejectionResponse) return budgetPolicy.rejectionResponse;
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
