@@ -6,6 +6,7 @@ import { MEDIA_PROVIDER_KINDS, getProviderAlias, resolveProviderId } from "@/sha
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { Row, KIND_EXAMPLE_CONFIG } from "./exampleShared";
+import { buildParamRequest, getParamDefaults, isFixedNumberField, resolveParamFields } from "./exampleParams";
 
 const CLOUDFLARE_TEST_IMAGE_URL = "https://pub-1fb693cb11cc46b2b2f656f51e015a2c.r2.dev/dog.png";
 const CLOUDFLARE_TEST_MASK_URL = "https://pub-1fb693cb11cc46b2b2f656f51e015a2c.r2.dev/dog-mask.png";
@@ -46,13 +47,14 @@ export function GenericExampleCard({ providerId, kind }) {
   const selectedModelObj = kindModels.find((m) => m.id === selectedModel);
   const supportsEdit = !!selectedModelObj?.capabilities?.includes("edit");
   const supportsMask = !!selectedModelObj?.capabilities?.includes("mask");
+  const resolvedFields = needsModel
+    ? resolveParamFields(safeExConfig.extraFields, selectedModelObj)
+    : (safeExConfig.extraFields || []);
 
   const [input, setInput] = useState(safeExConfig.defaultInput || "");
   const [refImage, setRefImage] = useState("");
   const [maskImage, setMaskImage] = useState("");
-  const [extraValues, setExtraValues] = useState(() =>
-    (safeExConfig.extraFields || []).reduce((acc, f) => { acc[f.key] = f.default ?? ""; return acc; }, {})
-  );
+  const [extraValues, setExtraValues] = useState(() => getParamDefaults(resolvedFields));
   const [apiKey, setApiKey] = useState("");
   const [useTunnel, setUseTunnel] = useState(false);
   const [localEndpoint, setLocalEndpoint] = useState("");
@@ -89,6 +91,15 @@ export function GenericExampleCard({ providerId, kind }) {
       .catch(() => {});
   }, [providerId]);
 
+  const handleModelChange = (modelId) => {
+    const nextModel = kindModels.find((model) => model.id === modelId);
+    const nextFields = needsModel
+      ? resolveParamFields(safeExConfig.extraFields, nextModel)
+      : (safeExConfig.extraFields || []);
+    setSelectedModel(modelId);
+    setExtraValues(getParamDefaults(nextFields));
+  };
+
   // Safe to early-return now that all hooks are declared
   if (!kindConfig || !exConfig) return null;
 
@@ -104,13 +115,7 @@ export function GenericExampleCard({ providerId, kind }) {
   const refImagePreviewSrc = toImagePreviewSrc(effectiveRefImage);
   const maskImagePreviewSrc = toImagePreviewSrc(effectiveMaskImage);
 
-  // Build request body with optional extra fields (only non-empty values)
-  const extraBodyFromFields = Object.entries(extraValues).reduce((acc, [k, v]) => {
-    if (v === "" || v === null || v === undefined) return acc;
-    if (typeof v === "number" && Number.isNaN(v)) return acc;
-    acc[k] = v;
-    return acc;
-  }, {});
+  const { params: extraBodyFromFields, error: parameterError } = buildParamRequest(resolvedFields, extraValues);
   const requestBody = {
     model: modelFull,
     [exConfig.bodyKey]: input,
@@ -130,7 +135,7 @@ export function GenericExampleCard({ providerId, kind }) {
   -d '${JSON.stringify(requestBody)}'${wantBinary ? " \\\n  --output image.png" : ""}`;
 
   const handleRun = async () => {
-    if (!input.trim() || !modelFull) return;
+    if (!input.trim() || !modelFull || parameterError) return;
     setRunning(true);
     setError("");
     setResult(null);
@@ -232,7 +237,7 @@ export function GenericExampleCard({ providerId, kind }) {
           <Row label="Model">
             <select
               value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
+              onChange={(e) => handleModelChange(e.target.value)}
               className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
             >
               {kindModels.map((m) => (
@@ -393,10 +398,8 @@ export function GenericExampleCard({ providerId, kind }) {
           </Row>
         )}
 
-        {/* Extra fields — for kinds without model concept (webSearch/webFetch), show all; otherwise filter by model.params */}
-        {(exConfig.extraFields || [])
-          .filter((f) => kindModels.length === 0 || (Array.isArray(selectedModelObj?.params) && selectedModelObj.params.includes(f.key)))
-          .map((f) => (
+        {/* Model params are the ordered whitelist; non-model kinds use their global fields. */}
+        {resolvedFields.map((f) => (
           <Row key={f.key} label={f.label}>
             {f.type === "select" ? (
               <select
@@ -408,6 +411,13 @@ export function GenericExampleCard({ providerId, kind }) {
                   <option key={opt} value={opt}>{opt === "" ? "(default)" : opt}</option>
                 ))}
               </select>
+            ) : f.type === "boolean" ? (
+              <input
+                type="checkbox"
+                checked={extraValues[f.key] === true}
+                onChange={(e) => setExtraValues((s) => ({ ...s, [f.key]: e.target.checked }))}
+                className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-primary"
+              />
             ) : f.type === "text" ? (
               <input
                 type="text"
@@ -422,7 +432,9 @@ export function GenericExampleCard({ providerId, kind }) {
                 value={extraValues[f.key] ?? ""}
                 min={f.min}
                 max={f.max}
-                onChange={(e) => setExtraValues((s) => ({ ...s, [f.key]: e.target.value === "" ? "" : Number(e.target.value) }))}
+                step={f.step}
+                disabled={isFixedNumberField(f)}
+                onChange={(e) => setExtraValues((s) => ({ ...s, [f.key]: e.target.value }))}
                 className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
               />
             )}
@@ -457,7 +469,7 @@ export function GenericExampleCard({ providerId, kind }) {
               </button>
             <button
               onClick={handleRun}
-              disabled={running || !input.trim() || !modelFull}
+              disabled={running || !input.trim() || !modelFull || !!parameterError}
               className="flex w-full sm:w-auto items-center justify-center gap-1.5 px-3 py-1 rounded-lg bg-primary text-white text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
                 <span className="material-symbols-outlined text-[14px]" style={running ? { animation: "spin 1s linear infinite" } : undefined}>
@@ -498,7 +510,7 @@ export function GenericExampleCard({ providerId, kind }) {
         )}
 
         {/* Error */}
-        {error && <p className="text-xs text-red-500 break-words">{error}</p>}
+        {(parameterError || error) && <p className="text-xs text-red-500 break-words">{parameterError || error}</p>}
 
         {/* Response */}
         <div>

@@ -67,7 +67,18 @@ export async function handleImageGeneration(request) {
   return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId });
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId } = {}) {
+/**
+ * Shared single-model image execution (generation or edit) — also used by the
+ * image edits handler. Validates credentials and drives account fallback.
+ * @param {object} body - Parsed request body
+ * @param {string} modelStr - Model or combo string
+ * @param {object} [options]
+ * @param {boolean} [options.wantsStream]
+ * @param {boolean} [options.binaryOutput]
+ * @param {string} [options.preferredConnectionId]
+ * @param {string} [options.operation] - "generation" (default) or "edit"
+ */
+export async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, operation = "generation" } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -80,6 +91,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       modelInfo: { provider, model },
       credentials: null,
       binaryOutput,
+      operation,
     });
     if (result.success) return result.response;
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "Image generation failed");
@@ -113,6 +125,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       credentials: refreshedCredentials,
       streamToClient: wantsStream,
       binaryOutput,
+      operation,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           accessToken: newCreds.accessToken,
@@ -127,6 +140,8 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     });
 
     if (result.success) return result.response;
+
+    if (result.shouldFallback === false) return result.response;
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
 

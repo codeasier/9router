@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { mergeCustomHeaders } from "../../../../../../open-sse/utils/customHeaders.js";
 import { getProviderConnectionById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
@@ -456,10 +457,10 @@ export async function GET(request, { params }) {
       const url = `${baseUrl.replace(/\/$/, "")}/models`;
       const response = await fetch(url, {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${connection.apiKey}`,
-        },
+         headers: mergeCustomHeaders({
+           "Content-Type": "application/json",
+           "Authorization": `Bearer ${connection.apiKey}`,
+         }, connection.providerSpecificData?.headers),
       });
 
       if (!response.ok) {
@@ -495,12 +496,12 @@ export async function GET(request, { params }) {
       const url = `${baseUrl}/models`;
       const response = await fetch(url, {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": connection.apiKey,
-          "anthropic-version": "2023-06-01",
-          "Authorization": `Bearer ${connection.apiKey}`
-        },
+         headers: mergeCustomHeaders({
+           "Content-Type": "application/json",
+           "x-api-key": connection.apiKey,
+           "anthropic-version": "2023-06-01",
+           "Authorization": `Bearer ${connection.apiKey}`
+         }, connection.providerSpecificData?.headers),
       });
 
       if (!response.ok) {
