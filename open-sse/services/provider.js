@@ -152,6 +152,12 @@ export function resolveTransport(provider, sourceFormat) {
   return transports.find(t => t.format === sourceFormat) || null;
 }
 
+// Pick a multi-endpoint transport by the *target* wire format (used when a
+// per-model protocol override forces chat/responses/messages).
+export function resolveTransportForFormat(provider, format) {
+  return resolveTransport(provider, format);
+}
+
 // Check if last message is from user
 export function isLastMessageFromUser(body) {
   const messages = body.messages || body.contents;
