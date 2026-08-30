@@ -15,6 +15,7 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
 import { getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAccess.js";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
+import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 /**
  * Handle web fetch (URL extraction) request for the SSE/Next.js server.
@@ -62,6 +63,10 @@ export async function handleFetch(request) {
     }
   }
 
+  // Per-key policy guard (entry)
+  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  if (!policyGuard.ok) return policyGuard.response;
+
   if (!providerInput || typeof providerInput !== "string") {
     log.warn("FETCH", "Missing provider/model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: provider (or model)");
@@ -102,7 +107,7 @@ export async function handleFetch(request) {
     const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("FETCH", `Combo "${providerInput}" with ${comboModels.length} providers (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
+    return policyGuard.wrap(await handleComboChat({
       body,
       models: comboModels,
       handleSingleModel: (b, m) => handleSingleProviderFetch(b, m, request, apiKey, settings),
@@ -110,10 +115,10 @@ export async function handleFetch(request) {
       comboName: providerInput,
       comboStrategy,
       comboStickyLimit
-    });
+    }));
   }
 
-  return handleSingleProviderFetch(body, providerInput, request, apiKey, settings);
+  return policyGuard.wrap(await handleSingleProviderFetch(body, providerInput, request, apiKey, settings));
 }
 
 async function handleSingleProviderFetch(body, providerInput, request, apiKey, settings) {
@@ -127,6 +132,10 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
     log.warn("FETCH", "Unknown provider", { provider: providerInput });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Unknown provider: ${providerInput}`);
   }
+
+  // Per-attempt provider budget check
+  const budgetReject = await checkProviderBudgetResponse(apiKey, providerId);
+  if (budgetReject) return budgetReject;
 
   const providerConfig = resolvedProvider.fetchConfig;
   if (!providerConfig) {
