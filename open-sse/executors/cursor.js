@@ -18,7 +18,7 @@ import { chatChunkSse, sseChunk } from "../utils/sse.js";
 import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_BLOCK } from "../translator/schema/index.js";
 import { proxyAwareFetch, resolveOutboundProxyUrl } from "../utils/proxyFetch.js";
-import { connectHttp2 } from "../utils/http2Connect.js";
+import { assertHttp2ProxyPolicy, connectHttp2 } from "../utils/http2Connect.js";
 import zlib from "zlib";
 import crypto from "crypto";
 
@@ -513,6 +513,7 @@ export class CursorExecutor extends BaseExecutor {
     // AgentService is h2-only and http2.connect() ignores every proxy setting.
     // Cursor gates chat by client IP, so a direct session can return HTTP 200
     // with an empty stream (see utils/http2Connect.js).
+    assertHttp2ProxyPolicy(proxyOptions);
     const proxyUrl = resolveOutboundProxyUrl(url, proxyOptions);
     if (proxyOptions?.connectionProxyEnabled === true && !proxyUrl) {
       throw new Error("Cursor AgentService proxy is bound but could not be resolved");
