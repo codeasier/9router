@@ -14,7 +14,8 @@ import { estimateUsage } from "../utils/usageTracking.js";
 import { SSE_DONE, SSE_HEADERS } from "../utils/sseConstants.js";
 import { chatChunkSse, sseChunk } from "../utils/sse.js";
 import { FORMATS } from "../translator/formats.js";
-import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { proxyAwareFetch, resolveOutboundProxyUrl } from "../utils/proxyFetch.js";
+import { connectHttp2 } from "../utils/http2Connect.js";
 import zlib from "zlib";
 import crypto from "crypto";
 
@@ -46,6 +47,25 @@ const AGENT_RUN_PATH = "/agent.v1.AgentService/Run";
 const PROTOBUF_LEN = 2;
 const PROTOBUF_VARINT = 0;
 
+function maskProxyUrl(proxyUrl) {
+  try {
+    const parsed = new URL(proxyUrl);
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`;
+  } catch {
+    return "proxy";
+  }
+}
+
+function emptyCompletionPayload() {
+  return {
+    error: {
+      message: "Cursor AgentService returned HTTP 200 with an empty stream",
+      type: "empty_completion",
+      code: "empty_completion",
+    },
+  };
+}
+
 function concatBuffers(...parts) {
   const length = parts.reduce((total, part) => total + part.length, 0);
   const result = new Uint8Array(length);
@@ -59,7 +79,6 @@ function concatBuffers(...parts) {
 
 const agentString = (field, value) => encodeField(field, PROTOBUF_LEN, value);
 const agentMessage = (field, value) => encodeField(field, PROTOBUF_LEN, value);
-const agentBool = (field, value) => encodeField(field, PROTOBUF_VARINT, value ? 1 : 0);
 
 function textFromContent(content) {
   if (typeof content === "string") return content;
@@ -123,7 +142,8 @@ function buildAgentRunFrame(messages, model) {
     ...(conversationHistory ? [agentMessage(7, conversationHistory)] : []),
   );
   const conversationAction = agentMessage(1, userAction);
-  const requestedModel = concatBuffers(agentString(1, model), agentBool(7, true));
+  // RequestedModel.model_id only. Field 7 is Bedrock credentials, not a bool flag.
+  const requestedModel = agentString(1, model);
   const runRequest = concatBuffers(
     // An empty ConversationStateStructure starts a fresh local agent session.
     agentMessage(1, new Uint8Array()),
@@ -164,6 +184,42 @@ function createRequestContextResponse() {
   const requestContextResult = agentMessage(1, requestContextSuccess);
   const execClientMessage = agentMessage(10, requestContextResult);
   return wrapConnectRPCFrame(agentMessage(2, execClientMessage));
+}
+
+function blobStoreKey(blobId) {
+  return Buffer.from(blobId || []).toString("hex");
+}
+
+function createKvClientFrame(kvId, resultField, resultMessage) {
+  const parts = [];
+  if (Number.isFinite(kvId)) {
+    parts.push(encodeField(1, PROTOBUF_VARINT, kvId));
+  }
+  parts.push(agentMessage(resultField, resultMessage));
+  return wrapConnectRPCFrame(agentMessage(3, concatBuffers(...parts)));
+}
+
+// AgentService field 4 (kv_server_message) is a blob store handshake.
+// Claude / GPT wait for get/set acks; ignoring them leaves only heartbeats.
+function handleKvServerMessage(kvMessage, blobStore) {
+  const kvId = kvMessage.has(1) ? kvMessage.get(1)[0].value : undefined;
+  if (kvMessage.has(2)) {
+    const args = decodeMessage(kvMessage.get(2)[0].value);
+    const blobId = args.get(1)?.[0]?.value;
+    const data = blobId ? blobStore.get(blobStoreKey(blobId)) : null;
+    const result = data?.length ? agentMessage(1, data) : new Uint8Array();
+    return createKvClientFrame(kvId, 2, result);
+  }
+  if (kvMessage.has(3)) {
+    const args = decodeMessage(kvMessage.get(3)[0].value);
+    const blobId = args.get(1)?.[0]?.value;
+    const blobData = args.get(2)?.[0]?.value;
+    if (blobId && blobData) {
+      blobStore.set(blobStoreKey(blobId), Buffer.from(blobData));
+    }
+    return createKvClientFrame(kvId, 3, new Uint8Array());
+  }
+  return null;
 }
 
 const CURSOR_STREAM_DEBUG = process.env.CURSOR_STREAM_DEBUG === "1";
@@ -385,13 +441,23 @@ export class CursorExecutor extends BaseExecutor {
    * AgentService (agent.api5.cursor.sh) is HTTP/2-only. Node's fetch/undici speaks
    * HTTP/1.1 and fails with HTTPParserError on the h2 preface — use http2 duplex.
    */
-  openAgentHttp2Stream(url, headers, signal) {
+  async openAgentHttp2Stream(url, headers, signal, proxyOptions = null, log = null) {
     if (!http2) {
       throw new Error("HTTP/2 is required for Cursor AgentService (endpoint is h2-only)");
     }
 
     const urlObj = new URL(url);
-    const client = http2.connect(`https://${urlObj.host}`);
+    // AgentService is h2-only and http2.connect() ignores every proxy setting.
+    // Cursor gates chat by client IP, so a direct session can return HTTP 200
+    // with an empty stream (see utils/http2Connect.js).
+    const proxyUrl = resolveOutboundProxyUrl(url, proxyOptions);
+    if (proxyOptions?.connectionProxyEnabled === true && !proxyUrl) {
+      throw new Error("Cursor AgentService proxy is bound but could not be resolved");
+    }
+    if (proxyUrl) {
+      log?.info?.("CURSOR_AGENT", `Run via HTTP/2 proxy ${maskProxyUrl(proxyUrl)}`);
+    }
+    const client = await connectHttp2(url, { proxyUrl });
     const chunkQueue = [];
     let waiting = null;
     let ended = false;
@@ -479,7 +545,7 @@ export class CursorExecutor extends BaseExecutor {
     };
   }
 
-  async executeAgent({ model, body, stream, credentials, signal }) {
+  async executeAgent({ model, body, stream, credentials, signal, proxyOptions = null, log = null }) {
     const agentEndpoint = PROVIDER_OAUTH.cursor?.agentEndpoint;
     if (!agentEndpoint) throw new Error("Cursor AgentService endpoint is not configured");
 
@@ -492,7 +558,7 @@ export class CursorExecutor extends BaseExecutor {
 
     let session;
     try {
-      session = this.openAgentHttp2Stream(url, headers, requestController.signal);
+      session = await this.openAgentHttp2Stream(url, headers, requestController.signal, proxyOptions, log);
       session.write(buildAgentRunFrame(body.messages || [], model));
     } catch (error) {
       throw new Error(`Cursor AgentService request failed: ${error.message}`);
@@ -535,8 +601,10 @@ export class CursorExecutor extends BaseExecutor {
     const created = Math.floor(Date.now() / 1000);
     let pending = Buffer.alloc(0);
     let finished = false;
+    const blobStore = new Map();
 
     const consume = async (onEvent) => {
+      let consumeError = null;
       try {
         while (!finished) {
           const { done, value } = await session.read();
@@ -581,12 +649,21 @@ export class CursorExecutor extends BaseExecutor {
                 onEvent({ type: "error", value: "Cursor AgentService requested an unsupported IDE tool" });
               }
             }
+
+            if (serverMessage.has(4)) {
+              const kvMessage = decodeMessage(serverMessage.get(4)[0].value);
+              const reply = handleKvServerMessage(kvMessage, blobStore);
+              if (reply) session.write(reply);
+            }
           });
         }
+      } catch (error) {
+        consumeError = error;
+        throw error;
       } finally {
         try { session.end(); } catch {}
         try { session.close(); } catch {}
-        if (!finished) onEvent({ type: "done" });
+        if (!finished && !consumeError) onEvent({ type: "done" });
       }
     };
 
@@ -611,13 +688,25 @@ export class CursorExecutor extends BaseExecutor {
           responseFormat: FORMATS.OPENAI,
         };
       }
+      if (!content) {
+        return {
+          response: new Response(JSON.stringify(emptyCompletionPayload()), {
+            status: HTTP_STATUS.BAD_GATEWAY,
+            headers: { "Content-Type": "application/json" },
+          }),
+          url,
+          headers,
+          transformedBody: body,
+          responseFormat: FORMATS.OPENAI,
+        };
+      }
       return {
         response: new Response(JSON.stringify({
           id: responseId,
           object: "chat.completion",
           created,
           model,
-          choices: [{ index: 0, message: { role: "assistant", content: content || null, ...(reasoning ? { reasoning_content: reasoning } : {}) }, finish_reason: "stop" }],
+          choices: [{ index: 0, message: { role: "assistant", content, ...(reasoning ? { reasoning_content: reasoning } : {}) }, finish_reason: "stop" }],
           usage: estimateUsage(body, content.length, FORMATS.OPENAI),
         }), { headers: { "Content-Type": "application/json" } }),
         url,
@@ -630,8 +719,10 @@ export class CursorExecutor extends BaseExecutor {
     const encoder = new TextEncoder();
     const responseStream = new ReadableStream({
       start(controller) {
+        let outputChars = 0;
         consume((event) => {
           if (event.type === "text") {
+            outputChars += event.value.length;
             controller.enqueue(encoder.encode(chatChunkSse({ id: responseId, created, model, delta: { content: event.value } })));
           } else if (event.type === "thinking") {
             controller.enqueue(encoder.encode(chatChunkSse({ id: responseId, created, model, delta: { reasoning_content: event.value } })));
@@ -643,7 +734,21 @@ export class CursorExecutor extends BaseExecutor {
             controller.enqueue(encoder.encode(SSE_DONE));
             controller.close();
           } else if (event.type === "done") {
-            controller.enqueue(encoder.encode(chatChunkSse({ id: responseId, created, model, delta: {}, finishReason: "stop" })));
+            if (outputChars === 0) {
+              controller.enqueue(encoder.encode(sseChunk(emptyCompletionPayload())));
+              controller.enqueue(encoder.encode(SSE_DONE));
+              controller.close();
+              return;
+            }
+            const usage = estimateUsage(body, outputChars, FORMATS.OPENAI);
+            controller.enqueue(encoder.encode(sseChunk({
+              id: responseId,
+              object: "chat.completion.chunk",
+              created,
+              model,
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+              usage,
+            })));
             controller.enqueue(encoder.encode(SSE_DONE));
             controller.close();
           }
@@ -666,7 +771,7 @@ export class CursorExecutor extends BaseExecutor {
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
     if (isAgentTextRequest(body)) {
       try {
-        return await this.executeAgent({ model, body, stream, credentials, signal });
+        return await this.executeAgent({ model, body, stream, credentials, signal, proxyOptions, log });
       } catch (error) {
         return {
           response: new Response(JSON.stringify({
