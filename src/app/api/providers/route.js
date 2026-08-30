@@ -136,8 +136,9 @@ export async function POST(request) {
       providerSpecificData = {
         prefix: node.prefix,
         apiType: node.apiType,
-        baseUrl: node.baseUrl,
-        nodeName: node.name,
+         baseUrl: node.baseUrl,
+         ...(Object.keys(node.headers || {}).length ? { headers: node.headers } : {}),
+         nodeName: node.name,
       };
     } else if (isAnthropicCompatibleProvider(provider)) {
       const node = await getProviderNodeById(provider);
@@ -146,8 +147,9 @@ export async function POST(request) {
       }
       providerSpecificData = {
         prefix: node.prefix,
-        baseUrl: node.baseUrl,
-        nodeName: node.name,
+         baseUrl: node.baseUrl,
+         ...(Object.keys(node.headers || {}).length ? { headers: node.headers } : {}),
+         nodeName: node.name,
       };
     } else if (isCustomEmbeddingProvider(provider)) {
       const node = await getProviderNodeById(provider);
@@ -156,8 +158,9 @@ export async function POST(request) {
       }
       providerSpecificData = {
         prefix: node.prefix,
-        baseUrl: node.baseUrl,
-        nodeName: node.name,
+         baseUrl: node.baseUrl,
+         ...(Object.keys(node.headers || {}).length ? { headers: node.headers } : {}),
+         nodeName: node.name,
       };
     }
 
