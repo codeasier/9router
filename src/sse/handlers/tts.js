@@ -10,6 +10,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
+import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 // Derived from providers.js: any TTS provider not noAuth requires stored credentials
 const CREDENTIALED_PROVIDERS = new Set(
@@ -34,12 +35,16 @@ export async function handleTts(request) {
   log.request("POST", `${url.pathname} | ${modelStr} | format=${responseFormat}${language ? ` | lang=${language}` : ""}`);
 
   const settings = await getSettings();
+  const apiKey = extractApiKey(request);
   if (settings.requireApiKey) {
-    const apiKey = extractApiKey(request);
     if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
     const valid = await isValidApiKey(apiKey);
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
+
+  // Per-key policy guard (entry)
+  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  if (!policyGuard.ok) return policyGuard.response;
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
@@ -51,26 +56,30 @@ export async function handleTts(request) {
     const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("TTS", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
+    return policyGuard.wrap(await handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelTts(b, m, responseFormat, language, style),
+      handleSingleModel: (b, m) => handleSingleModelTts(b, m, responseFormat, language, style, apiKey),
       log,
       comboName: modelStr,
       comboStrategy,
       comboStickyLimit,
-    });
+    }));
   }
 
-  return handleSingleModelTts(body, modelStr, responseFormat, language, style);
+  return policyGuard.wrap(await handleSingleModelTts(body, modelStr, responseFormat, language, style, apiKey));
 }
 
-async function handleSingleModelTts(body, modelStr, responseFormat, language, style) {
+async function handleSingleModelTts(body, modelStr, responseFormat, language, style, apiKey = null) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
   log.info("ROUTING", `Provider: ${provider}, Voice: ${model}`);
+
+  // Per-attempt provider budget check
+  const budgetReject = await checkProviderBudgetResponse(apiKey, provider);
+  if (budgetReject) return budgetReject;
 
   // noAuth providers — no credential needed
   if (!CREDENTIALED_PROVIDERS.has(provider)) {
