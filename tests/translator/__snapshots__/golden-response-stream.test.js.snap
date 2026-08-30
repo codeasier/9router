@@ -138,6 +138,7 @@ exports[`GOLDEN response stream: Claude → OpenAI > text + thinking + tool_use 
     "model": "claude-opus-4-6",
     "object": "chat.completion.chunk",
     "usage": {
+      "cached_tokens": 3,
       "completion_tokens": 5,
       "prompt_tokens": 13,
       "prompt_tokens_details": {
@@ -289,6 +290,7 @@ exports[`GOLDEN response stream: Gemini → OpenAI > text + thought(no-sig) + fu
     "model": "gemini-3-pro",
     "object": "chat.completion.chunk",
     "usage": {
+      "cached_tokens": 1,
       "completion_tokens": 6,
       "completion_tokens_details": {
         "reasoning_tokens": 2,
@@ -558,6 +560,7 @@ exports[`GOLDEN response stream: OpenAI-Responses (codex) → OpenAI > text + re
     "model": "unknown",
     "object": "chat.completion.chunk",
     "usage": {
+      "cached_tokens": 3,
       "completion_tokens": 5,
       "prompt_tokens": 10,
       "prompt_tokens_details": {

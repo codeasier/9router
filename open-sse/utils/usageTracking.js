@@ -190,7 +190,9 @@ export function canonicalizeUsage(usage) {
     prompt = prompt + cached + cacheCreation;
   } else {
     // OpenAI/Gemini path (or already-canonical input): prompt already includes cached_tokens.
-    cached = num(usage.cached_tokens);
+    // buildUsage() stores cache only on prompt_tokens_details; fall back so
+    // usageHistory does not persist 0 on the Chat→Responses path.
+    cached = num(usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens);
   }
 
   const result = {
