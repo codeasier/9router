@@ -42,6 +42,14 @@ export async function PATCH(request) {
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
 
+    if (Object.prototype.hasOwnProperty.call(body, "codexResetCreditAutoUseMinutes")) {
+      const value = Number(body.codexResetCreditAutoUseMinutes);
+      if (!Number.isFinite(value) || value < 0 || value > 10080) {
+        return NextResponse.json({ error: "codexResetCreditAutoUseMinutes must be between 0 and 10080." }, { status: 400 });
+      }
+      body.codexResetCreditAutoUseMinutes = value === 0 ? 0 : Math.max(1, Math.round(value));
+    }
+
     // If updating password, hash it
     if (body.newPassword) {
       const settings = await getSettings();
@@ -106,6 +114,12 @@ export async function PATCH(request) {
           configureQuotaAutoPing(settings);
         })
         .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "codexResetCreditAutoUseMinutes")) {
+      import("@/shared/services/codexResetCreditAutoUse")
+        .then(({ configureCodexResetCreditAutoUse }) => configureCodexResetCreditAutoUse(settings))
+        .catch((error) => console.warn("[Codex Reset Credits] settings update failed:", error.message));
     }
 
     const { password, oidcClientSecret, ...safeSettings } = settings;
