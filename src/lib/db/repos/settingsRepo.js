@@ -67,6 +67,7 @@ const DEFAULT_SETTINGS = {
   pxpipeTimeoutMs: 15000,
   // Per-provider user header overrides applied at dispatch: { [providerId]: { headers: {..} } }
   providerOverrides: {},
+  codexResetCreditAutoUseMinutes: 0,
 };
 
 async function readRaw() {
