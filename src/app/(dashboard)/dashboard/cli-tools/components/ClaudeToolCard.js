@@ -8,6 +8,7 @@ import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { applyClaudeModelMappings } from "./claudeModelMappings";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_CLOUD_URL;
 
@@ -211,12 +212,7 @@ export default function ClaudeToolCard({
         env.ANTHROPIC_AUTH_TOKEN = keyToUse;
       }
 
-      tool.defaultModels.forEach((model) => {
-        const targetModel = modelMappings[model.alias];
-        // Written verbatim — the input may hold a marker typed by hand, and the
-        // toggle already decided the marker when it was flipped.
-        if (targetModel && model.envKey) env[model.envKey] = targetModel;
-      });
+      applyClaudeModelMappings(env, tool.defaultModels, modelMappings);
       if (autoCompactWindow) {
         env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = autoCompactWindow;
       }
@@ -279,10 +275,7 @@ export default function ClaudeToolCard({
       ? selectedApiKey
       : (!cloudEnabled ? "sk_9router" : "<API_KEY_FROM_DASHBOARD>");
     const env = { ANTHROPIC_BASE_URL: getEffectiveBaseUrl(), ANTHROPIC_AUTH_TOKEN: keyToUse };
-    tool.defaultModels.forEach((model) => {
-      const targetModel = modelMappings[model.alias];
-      if (targetModel && model.envKey) env[model.envKey] = targetModel;
-    });
+    applyClaudeModelMappings(env, tool.defaultModels, modelMappings);
     if (autoCompactWindow) {
       env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = autoCompactWindow;
     }
