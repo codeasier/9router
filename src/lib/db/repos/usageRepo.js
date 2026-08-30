@@ -253,7 +253,9 @@ export async function saveRequestUsage(entry) {
     const db = await getAdapter();
 
     if (!entry.timestamp) entry.timestamp = new Date().toISOString();
-    entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
+    entry.cost = Number.isFinite(entry.costUsd) && entry.costUsd >= 0
+      ? entry.costUsd
+      : await calculateCost(entry.provider, entry.model, entry.tokens);
 
     const tokens = entry.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
@@ -264,7 +266,7 @@ export async function saveRequestUsage(entry) {
     // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
     db.transaction(() => {
-      const existing = db.get(
+      const existing = entry.requestId ? null : db.get(
         `SELECT id, endpoint FROM usageHistory
          WHERE timestamp = ?
            AND COALESCE(provider, '') = COALESCE(?, '')
@@ -294,7 +296,7 @@ export async function saveRequestUsage(entry) {
           entry.timestamp, entry.provider || null, entry.model || null,
           entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
-          stringifyJson(tokens), stringifyJson({}),
+          stringifyJson(tokens), stringifyJson(entry.requestId ? { requestId: entry.requestId } : {}),
         ]
       );
 
@@ -317,14 +319,17 @@ export async function saveRequestUsage(entry) {
     if (inserted) {
       pushToRing(entry);
       scheduleStatsEvent("update", 250);
-      // Keep per-key budget accounting ahead of its TTL cache (fire-and-forget;
-      // dynamic import avoids a static cycle keyPolicy → localDb → usageRepo).
-      import("@/sse/services/keyPolicy.js")
-        .then(({ bumpBudgetCache }) => bumpBudgetCache(entry.apiKey, entry.provider, entry.cost))
+      // Dynamic import avoids a static cycle keyPolicy → localDb → usageRepo.
+      // Awaiting the bump keeps a successful fixed-cost attempt visible to the
+      // next budget check before this call resolves.
+      await import("@/sse/services/keyPolicy.js")
+        .then(({ bumpBudgetCache }) => bumpBudgetCache(entry.apiKey, entry.provider, entry.cost, entry.timestamp))
         .catch(() => {});
     }
+    return inserted;
   } catch (e) {
     console.error("Failed to save usage stats:", e);
+    return false;
   }
 }
 
