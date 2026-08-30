@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
 import { validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
-import { normalizePolicy, invalidateKeyPolicy } from "@/sse/services/keyPolicy.js";
+import { normalizePolicy, invalidateKeyPolicy, resetKeyPolicyState } from "@/sse/services/keyPolicy.js";
 
 // GET /api/keys/[id] - Get single key
 export async function GET(request, { params }) {
@@ -48,7 +48,9 @@ export async function PUT(request, { params }) {
 
     const updated = await updateApiKey(id, updateData);
     if (policy !== undefined && updated?.key) {
-      invalidateKeyPolicy(updated.key);
+      // Clear budget cache + policy cache and any open breakers so a raised
+      // limit takes effect immediately (manual reset also uses this).
+      resetKeyPolicyState(updated.key);
     }
 
     return NextResponse.json({ key: updated });
