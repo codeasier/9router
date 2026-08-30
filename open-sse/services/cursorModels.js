@@ -13,7 +13,7 @@ import crypto from "crypto";
 import { PROVIDER_OAUTH } from "../providers/index.js";
 import { buildCursorHeaders } from "../utils/cursorChecksum.js";
 import { decodeMessage } from "../utils/cursorProtobuf.js";
-import { connectHttp2 } from "../utils/http2Connect.js";
+import { assertHttp2ProxyPolicy, connectHttp2 } from "../utils/http2Connect.js";
 import { resolveOutboundProxyUrl } from "../utils/proxyFetch.js";
 
 const FETCH_TIMEOUT_MS = 10_000;
@@ -161,6 +161,7 @@ async function fetchCursorCatalog(credentials, signal, options = {}) {
   const machineId = credentials?.providerSpecificData?.machineId;
   const url = getCursorModelsUrl();
   if (!accessToken || !machineId || !url) return null;
+  assertHttp2ProxyPolicy(options.proxyOptions);
 
   const headers = {
     ...buildCursorHeaders(accessToken, machineId, credentials?.providerSpecificData?.ghostMode !== false),
