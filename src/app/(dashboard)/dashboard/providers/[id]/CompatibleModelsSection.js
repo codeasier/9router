@@ -3,8 +3,12 @@
 import { useState } from "react";
 import PropTypes from "prop-types";
 import { Button } from "@/shared/components";
+import { translate } from "@/i18n/runtime";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
-function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting }) {
+
+const SELECT_CLASS = "rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] focus:border-primary focus:outline-none";
+
+function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, thinkingValue, thinkingOptions, onThinkingChange, protocolValue, protocolOptions, onProtocolChange }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -27,6 +31,34 @@ function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias,
       </span>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium truncate">{modelId}</p>
+        {(thinkingOptions?.length || protocolOptions?.length > 1) ? (
+          <div className="flex flex-wrap items-center gap-1 mt-1">
+            {thinkingOptions?.length ? (
+              <select
+                value={thinkingValue || "auto"}
+                onChange={(e) => onThinkingChange?.(e.target.value)}
+                title={translate("Gateway thinking override")}
+                className={SELECT_CLASS}
+              >
+                {thinkingOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            ) : null}
+            {protocolOptions?.length > 1 ? (
+              <select
+                value={protocolValue || "auto"}
+                onChange={(e) => onProtocolChange?.(e.target.value)}
+                title={translate("Gateway protocol override")}
+                className={SELECT_CLASS}
+              >
+                {protocolOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+        ) : null}
         <div className="flex items-center gap-1 mt-1">
           <code className="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{fullModel}</code>
           <div className="relative group/btn">
@@ -71,7 +103,7 @@ function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias,
   );
 }
 
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onAddCustomModel, onDeleteCustomModel, connections, isAnthropic }) {
+export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onAddCustomModel, onDeleteCustomModel, connections, isAnthropic, getOverrideProps }) {
   const [newModel, setNewModel] = useState("");
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -206,6 +238,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
               onTest={connections.length > 0 ? () => handleTestModel(id) : undefined}
               testStatus={modelTestResults[id]}
               isTesting={testingModelId === id}
+              {...(getOverrideProps?.(id) || {})}
             />
           ))}
         </div>
@@ -229,4 +262,5 @@ CompatibleModelsSection.propTypes = {
     isActive: PropTypes.bool,
   })).isRequired,
   isAnthropic: PropTypes.bool,
+  getOverrideProps: PropTypes.func,
 };

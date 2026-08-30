@@ -1,7 +1,7 @@
 import REGISTRY from "../providers/registry/index.js";
 // PROVIDER_MODELS now built from providers/registry (transport + models co-located)
 import { PROVIDER_MODELS } from "../providers/index.js";
-import { modelQuotaFamily, modelStrip, modelTargetFormat, modelSupportedFormats, normalizeModelId } from "../providers/models/schema.js";
+import { modelQuotaFamily, modelStrip, modelTargetFormat, modelSupportedFormats, modelThinking, normalizeModelId } from "../providers/models/schema.js";
 import { CODEX_REVIEW_SUFFIX, isMuseSparkModel, opencodeFamilyFormats } from "../providers/models/helpers.js";
 import { FORMATS } from "../translator/formats.js";
 export { PROVIDER_MODELS };
@@ -38,6 +38,12 @@ function findModel(models, modelId, aliasOrId) {
   const normalized = normalizeModelId(baseModelId);
   if (normalized === baseModelId) return undefined;
   return models.find(m => m.id === normalized);
+}
+
+// Split off a trailing thinking suffix "model(level)" so registry lookups hit the base id.
+function baseModelId(modelId) {
+  const match = typeof modelId === "string" ? modelId.match(/\([^()]+\)\s*$/) : null;
+  return match ? modelId.slice(0, match.index).trim() : modelId;
 }
 
 export function isValidModel(aliasOrId, modelId, passthroughProviders = new Set()) {
@@ -78,6 +84,13 @@ export function getModelSupportedFormats(aliasOrId, modelId) {
   if (found) return modelSupportedFormats(found);
   if (isOpenCodeAlias(aliasOrId)) return opencodeFamilyFormats(modelId)?.supportedFormats || [FORMATS.OPENAI];
   return null;
+}
+
+// Static registry thinking default for a model (null when undeclared).
+export function getModelThinking(aliasOrId, modelId) {
+  const models = PROVIDER_MODELS[aliasOrId];
+  if (!models) return null;
+  return modelThinking(findModel(models, modelId, aliasOrId));
 }
 
 export function getModelType(aliasOrId, modelId) {
