@@ -19,7 +19,7 @@ const PROVIDER_OPTIONS = Object.values(AI_PROVIDERS)
  *
  * policy shape: { budgets: [{provider, limitUsd, period}], maxConcurrent, breaker: {mode, durationMinutes} }
  */
-export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSaved }) {
+export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSaved, onReset }) {
   const [budgets, setBudgets] = useState(() => initBudgets(apiKeyRecord?.policy));
   const [maxConcurrent, setMaxConcurrent] = useState(apiKeyRecord?.policy?.maxConcurrent?.toString() || "");
   const [breakerMode, setBreakerMode] = useState(apiKeyRecord?.policy?.breaker?.mode || "fixed");
@@ -27,6 +27,7 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
     apiKeyRecord?.policy?.breaker?.durationMinutes?.toString() || "5"
   );
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(null);
 
@@ -47,6 +48,26 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
     const timer = setInterval(() => { if (!document.hidden) fetchStatus(); }, 5000);
     return () => clearInterval(timer);
   }, [isOpen, fetchStatus]);
+
+  const handleReset = async () => {
+    if (!apiKeyRecord?.id || resetting) return;
+    setResetting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/keys/${apiKeyRecord.id}/reset`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Failed to reset");
+        return;
+      }
+      setStatus(data.status || null);
+      onReset?.(apiKeyRecord.id, data.status);
+    } catch (e) {
+      setError(e.message || "Failed to reset");
+    } finally {
+      setResetting(false);
+    }
+  };
 
   if (!apiKeyRecord) return null;
 
@@ -163,19 +184,43 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
             })}
             {/* Open breakers */}
             {(status.breaker || status.providerBreakers?.length > 0) && (
-              <div className="flex flex-col gap-1 text-xs text-red-500">
-                {status.breaker && (
-                  <p className="flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[14px]">block</span>
-                    {translate("Key breaker open")} — {status.breaker.reason} ({translate("until")} {new Date(status.breaker.untilMs).toLocaleTimeString()})
-                  </p>
-                )}
-                {status.providerBreakers?.map((pb, i) => (
-                  <p key={i} className="flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[14px]">block</span>
-                    {pb.provider} {translate("breaker open")} — {pb.reason} ({translate("until")} {new Date(pb.untilMs).toLocaleTimeString()})
-                  </p>
-                ))}
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-1 text-xs text-red-500">
+                  {status.breaker && (
+                    <p className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[14px]">block</span>
+                      {translate("Key breaker open")} — {status.breaker.reason} ({translate("until")} {new Date(status.breaker.untilMs).toLocaleTimeString()})
+                    </p>
+                  )}
+                  {status.providerBreakers?.map((pb, i) => (
+                    <p key={i} className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[14px]">block</span>
+                      {pb.provider} {translate("breaker open")} — {pb.reason} ({translate("until")} {new Date(pb.untilMs).toLocaleTimeString()})
+                    </p>
+                  ))}
+                </div>
+                <button
+                  onClick={handleReset}
+                  disabled={resetting}
+                  className="self-start inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-300 dark:border-red-800 bg-red-500/10 text-red-600 dark:text-red-400 text-xs font-medium hover:bg-red-500/20 disabled:opacity-50 transition-colors"
+                >
+                  <span className={`material-symbols-outlined text-[16px] ${resetting ? "animate-spin" : ""}`}>{resetting ? "progress_activity" : "restart_alt"}</span>
+                  {resetting ? translate("Resetting…") : translate("Reset breaker")}
+                </button>
+              </div>
+            )}
+            {/* Manual reset hint when breaker not open but policy exists */}
+            {status?.hasPolicy && !status.breaker && (!status.providerBreakers || status.providerBreakers.length === 0) && (
+              <div className="flex justify-end">
+                <button
+                  onClick={handleReset}
+                  disabled={resetting}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-text-muted hover:text-primary hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-50 transition-colors"
+                  title={translate("Clear breaker cooldown and refresh spend cache")}
+                >
+                  <span className={`material-symbols-outlined text-[14px] ${resetting ? "animate-spin" : ""}`}>{resetting ? "progress_activity" : "restart_alt"}</span>
+                  {translate("Reset quota cache")}
+                </button>
               </div>
             )}
           </div>
@@ -316,4 +361,5 @@ PolicyEditorModal.propTypes = {
   apiKeyRecord: PropTypes.object,
   onClose: PropTypes.func.isRequired,
   onSaved: PropTypes.func,
+  onReset: PropTypes.func,
 };
