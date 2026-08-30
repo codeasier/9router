@@ -69,12 +69,29 @@ export function buildHttpConnectRequest(targetHost, targetPort, proxyUrl) {
   );
 }
 
-async function connectViaHttpProxy(proxyUrl, targetHost, targetPort, timeoutMs) {
+export function assertHttp2ProxyPolicy(proxyOptions) {
+  const relayUrl = String(proxyOptions?.vercelRelayUrl || "").trim();
+  if (relayUrl && proxyOptions?.strictProxy === true) {
+    throw new Error("HTTP/2 cannot use an application-layer relay while strictProxy=true");
+  }
+}
+
+export function getHttpProxySocketConfig(proxyUrl) {
   const proxy = new URL(proxyUrl);
-  const proxyPort = Number(proxy.port) || (proxy.protocol === "https:" ? 443 : 80);
+  const secure = proxy.protocol === "https:";
+  const options = {
+    host: proxy.hostname,
+    port: Number(proxy.port) || (secure ? 443 : 80),
+  };
+  if (secure && net.isIP(proxy.hostname) === 0) options.servername = proxy.hostname;
+  return { secure, connectEvent: secure ? "secureConnect" : "connect", options };
+}
+
+async function connectViaHttpProxy(proxyUrl, targetHost, targetPort, timeoutMs) {
+  const { secure, connectEvent, options } = getHttpProxySocketConfig(proxyUrl);
 
   return new Promise((resolve, reject) => {
-    const socket = net.connect({ host: proxy.hostname, port: proxyPort });
+    const socket = secure ? tls.connect(options) : net.connect(options);
     let settled = false;
 
     const fail = (error) => {
@@ -89,7 +106,7 @@ async function connectViaHttpProxy(proxyUrl, targetHost, targetPort, timeoutMs) 
     socket.once("timeout", () => fail(new Error("Proxy CONNECT timed out")));
     socket.setTimeout(timeoutMs);
 
-    socket.once("connect", () => {
+    socket.once(connectEvent, () => {
       socket.setNoDelay(true);
       socket.write(buildHttpConnectRequest(targetHost, targetPort, proxyUrl));
     });
