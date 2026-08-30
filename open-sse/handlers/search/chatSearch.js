@@ -539,7 +539,7 @@ export async function handleChatSearch({
       query,
       results,
       answer: { source: provider, text: text || "", model: useModel },
-      usage: { queries_used: 1, search_cost_usd: 0, llm_tokens: tokens || 0 },
+      usage: { queries_used: 1, search_cost_usd: null, llm_tokens: tokens || 0 },
       metrics: {
         response_time_ms: Date.now() - startTime,
         upstream_latency_ms: upstreamLatency,

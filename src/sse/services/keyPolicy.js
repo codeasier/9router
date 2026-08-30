@@ -28,11 +28,21 @@ if (!global._keyPolicyState) {
     breaker: new Map(),   // apiKey string -> { untilMs, reason }  (whole-key breaker)
     pb: new Map(),        // `${apiKey}|${provider}` -> { untilMs, reason } (provider-budget breaker)
     inflight: new Map(),  // apiKey string -> count of in-flight requests
-    budgetCache: new Map(), // `${apiKey}|${provider}|${windowStartMs}` -> { expiresAt, spentUsd }
+    budgetCache: new Map(), // `${apiKey}|${provider}|${startMs}|${endMs}` -> cached spend
+    reservations: new Map(), // `${apiKey}|${scope}|${period}|${window}` -> Map(request token, USD)
     policyCache: new Map(), // apiKey string -> { expiresAt, policy }
   };
 }
 const state = global._keyPolicyState;
+// Preserve state created by an older hot-reloaded module in the same process.
+state.reservations ??= new Map();
+
+function pruneExpiredReservations(now) {
+  for (const reservationKey of state.reservations.keys()) {
+    const endMs = Number(reservationKey.slice(reservationKey.lastIndexOf("|") + 1));
+    if (Number.isFinite(endMs) && endMs <= now) state.reservations.delete(reservationKey);
+  }
+}
 
 // ─── Policy parsing / normalization ──────────────────────────────────────
 // Returns a normalized policy object or null (no policy / invalid → no limits).
@@ -126,7 +136,7 @@ export function _setBudgetQuery(fn) {
 }
 
 async function getSpentUsd(apiKeyValue, provider, startMs, endMs, now = Date.now()) {
-  const cacheKey = `${apiKeyValue}|${provider}|${startMs}`;
+  const cacheKey = `${apiKeyValue}|${provider}|${startMs}|${endMs}`;
   const cached = state.budgetCache.get(cacheKey);
   if (cached && cached.expiresAt > now) return cached.spentUsd;
 
@@ -158,7 +168,11 @@ async function getSpentUsd(apiKeyValue, provider, startMs, endMs, now = Date.now
     return 0;
   }
 
-  state.budgetCache.set(cacheKey, { expiresAt: now + BUDGET_CACHE_TTL_MS, spentUsd });
+  state.budgetCache.set(cacheKey, {
+    expiresAt: now + BUDGET_CACHE_TTL_MS,
+    windowEndMs: endMs,
+    spentUsd,
+  });
   // Opportunistic prune: entries are few (per key×provider×window), but
   // stale windows should not accumulate across restarts-free long runs.
   if (state.budgetCache.size > 512) {
@@ -171,13 +185,31 @@ async function getSpentUsd(apiKeyValue, provider, startMs, endMs, now = Date.now
 
 // Called from usageRepo.saveRequestUsage on every real insert to keep the
 // in-memory budget ahead of the TTL cache.
-export function bumpBudgetCache(apiKeyValue, provider, costUsd, now = Date.now()) {
+export function bumpBudgetCache(apiKeyValue, provider, costUsd, timestamp = Date.now()) {
   if (!apiKeyValue || !Number.isFinite(costUsd) || costUsd === 0) return;
+  const usageMs = typeof timestamp === "number" ? timestamp : Date.parse(timestamp);
+  const now = Date.now();
   for (const [cacheKey, entry] of state.budgetCache) {
     if (entry.expiresAt <= now) continue;
-    const [key, prov, startMsStr] = cacheKey.split("|");
+    const cacheParts = cacheKey.split("|");
+    const endMsStr = cacheParts.pop();
+    const startMsStr = cacheParts.pop();
+    const prov = cacheParts.pop();
+    const key = cacheParts.join("|");
     if (key !== apiKeyValue) continue;
     if (prov !== "*" && provider && prov !== provider) continue;
+    const startMs = Number(startMsStr);
+    if (
+      !Number.isFinite(usageMs)
+      || !Number.isFinite(startMs)
+      || !Number.isFinite(Number(endMsStr))
+      || !Number.isFinite(entry.windowEndMs)
+    ) {
+      // Old hot-reload cache entries lack window bounds; force a fresh DB read.
+      state.budgetCache.delete(cacheKey);
+      continue;
+    }
+    if (usageMs < startMs || usageMs >= entry.windowEndMs) continue;
     entry.spentUsd += costUsd;
   }
 }
@@ -211,6 +243,9 @@ export function resetKeyPolicyState(apiKeyValue) {
   for (const k of state.budgetCache.keys()) {
     if (k.startsWith(`${apiKeyValue}|`)) state.budgetCache.delete(k);
   }
+  for (const k of state.reservations.keys()) {
+    if (k.startsWith(`${apiKeyValue}|`)) state.reservations.delete(k);
+  }
   state.policyCache.delete(apiKeyValue);
   log.warn("KEYPOLICY", `reset state for ${apiKeyValue.slice(0, 8)}…`);
 }
@@ -222,7 +257,7 @@ export function resetKeyPolicyState(apiKeyValue) {
  * { ok: false, status: 429, retryAfterMs, message }.
  * When provider is null (unknown at check time), only "*" budgets are checked.
  */
-export async function checkBudget(apiKeyValue, policy, provider, now = Date.now()) {
+export async function checkBudget(apiKeyValue, policy, provider, now = Date.now(), pendingCostUsd = 0) {
   const budgets = policy?.budgets;
   if (!budgets || budgets.length === 0) return { ok: true };
 
@@ -266,6 +301,13 @@ export async function checkBudget(apiKeyValue, policy, provider, now = Date.now(
         ok: false, status: 429,
         retryAfterMs: untilMs - now,
         message: `API key ${reason}; circuit breaker until ${new Date(untilMs).toISOString()}`,
+      };
+    }
+    const projectedUsd = spentUsd + (Number.isFinite(pendingCostUsd) && pendingCostUsd >= 0 ? pendingCostUsd : 0);
+    if (projectedUsd > b.limitUsd) {
+      return {
+        ok: false, status: 429, retryAfterMs: 1000,
+        message: `API key projected budget would exceed $${b.limitUsd} per ${b.period} on ${b.provider === "*" ? "all providers" : b.provider}; retry shortly`,
       };
     }
   }
@@ -371,6 +413,7 @@ export function _resetKeyPolicyState() {
   state.pb.clear();
   state.inflight.clear();
   state.budgetCache.clear();
+  state.reservations.clear();
   state.policyCache.clear();
 }
 
@@ -512,4 +555,150 @@ export async function checkProviderBudgetResponse(apiKeyValue, provider) {
   const result = await checkBudget(apiKeyValue, { ...policy, budgets: policy.budgets.filter(b => b.provider !== "*") }, providerId);
   if (!result.ok) return policyErrorResponse(result);
   return null;
+}
+
+/**
+ * Evaluate a resolved provider attempt against matching provider or wildcard
+ * budgets. Unknown costs fail closed only when such a budget exists.
+ */
+export async function evaluateProviderBudget(apiKeyValue, provider, { costUsd, operation = "request" } = {}) {
+  const noopRelease = () => {};
+  const allowed = {
+    budgetMatched: false,
+    rejectionResponse: null,
+    releaseReservation: noopRelease,
+    accountingTimestamp: null,
+  };
+  if (!apiKeyValue || !provider) return allowed;
+
+  const policy = await getPolicyForApiKey(apiKeyValue);
+  if (!policy?.budgets?.length) return allowed;
+
+  const providerId = await resolveProvider(provider);
+  const matchingBudgets = policy.budgets.filter((budget) => budget.provider === "*" || budget.provider === providerId);
+  if (matchingBudgets.length === 0) return allowed;
+
+  if (!Number.isFinite(costUsd) || costUsd < 0) {
+    return {
+      budgetMatched: true,
+      rejectionResponse: policyErrorResponse({
+        status: 403,
+        message: `API key budget policy blocks ${operation} for provider "${providerId}" because its USD cost cannot be determined before the upstream request`,
+      }),
+      releaseReservation: noopRelease,
+    };
+  }
+
+  const now = Date.now();
+  pruneExpiredReservations(now);
+  const accountingTimestamp = new Date(now).toISOString();
+  const keyBreaker = breakerOpen(state.breaker, apiKeyValue, now);
+  if (keyBreaker) {
+    return {
+      budgetMatched: true,
+      rejectionResponse: policyErrorResponse({
+        status: 429,
+        retryAfterMs: keyBreaker.untilMs - now,
+        message: `API key circuit breaker open (${keyBreaker.reason}); retry after ${new Date(keyBreaker.untilMs).toISOString()}`,
+      }),
+      releaseReservation: noopRelease,
+    };
+  }
+
+  for (const budget of matchingBudgets) {
+    if (budget.provider === "*") continue;
+    const providerBreaker = breakerOpen(state.pb, `${apiKeyValue}|${budget.provider}`, now);
+    if (providerBreaker) {
+      return {
+        budgetMatched: true,
+        rejectionResponse: policyErrorResponse({
+          status: 429,
+          retryAfterMs: providerBreaker.untilMs - now,
+          message: `Circuit breaker open for provider "${budget.provider}" (${providerBreaker.reason}); retry after ${new Date(providerBreaker.untilMs).toISOString()}`,
+        }),
+        releaseReservation: noopRelease,
+      };
+    }
+  }
+
+  const checks = await Promise.all(matchingBudgets.map(async (budget) => {
+    const [startMs, endMs] = periodWindowMs(budget.period, now);
+    const spentUsd = await getSpentUsd(apiKeyValue, budget.provider, startMs, endMs, now);
+    const budgetCacheKey = `${apiKeyValue}|${budget.provider}|${startMs}|${endMs}`;
+    const reservationKey = `${apiKeyValue}|${budget.provider}|${budget.period}|${startMs}|${endMs}`;
+    return { budget, spentUsd, budgetCacheKey, reservationKey };
+  }));
+
+  // No await below this point: reservation checks and increments are atomic
+  // with respect to other JavaScript tasks in this process.
+  for (const check of checks) {
+    const { budget } = check;
+    const spentUsd = state.budgetCache.get(check.budgetCacheKey)?.spentUsd ?? check.spentUsd;
+    if (spentUsd < budget.limitUsd) continue;
+    const reason = `budget exceeded: $${spentUsd.toFixed(4)} / $${budget.limitUsd} per ${budget.period} on ${budget.provider === "*" ? "all providers" : budget.provider}`;
+    const untilMs = breakerUntil(policy, budget.period, now);
+    if (budget.provider === "*") {
+      tripBreaker(state.breaker, apiKeyValue, untilMs, reason);
+    } else {
+      tripBreaker(state.pb, `${apiKeyValue}|${budget.provider}`, untilMs, reason);
+    }
+    return {
+      budgetMatched: true,
+      rejectionResponse: policyErrorResponse({
+        status: 429,
+        retryAfterMs: untilMs - now,
+        message: `API key ${reason}; circuit breaker until ${new Date(untilMs).toISOString()}`,
+      }),
+      releaseReservation: noopRelease,
+    };
+  }
+
+  for (const check of checks) {
+    const { budget, reservationKey } = check;
+    const spentUsd = state.budgetCache.get(check.budgetCacheKey)?.spentUsd ?? check.spentUsd;
+    const scopeReservations = state.reservations.get(reservationKey);
+    const reservedUsd = scopeReservations
+      ? [...scopeReservations.values()].reduce((total, reservedCost) => total + reservedCost, 0)
+      : 0;
+    if (spentUsd + reservedUsd + costUsd <= budget.limitUsd) continue;
+    return {
+      budgetMatched: true,
+      rejectionResponse: policyErrorResponse({
+        status: 429,
+        retryAfterMs: 1000,
+        message: `API key projected budget would exceed $${budget.limitUsd} per ${budget.period} on ${budget.provider === "*" ? "all providers" : budget.provider}; retry shortly`,
+      }),
+      releaseReservation: noopRelease,
+    };
+  }
+
+  const reservationKeys = [...new Set(checks.map(({ reservationKey }) => reservationKey))];
+  const reservationToken = {};
+  for (const reservationKey of reservationKeys) {
+    let scopeReservations = state.reservations.get(reservationKey);
+    if (!scopeReservations) {
+      scopeReservations = new Map();
+      state.reservations.set(reservationKey, scopeReservations);
+    }
+    scopeReservations.set(reservationToken, costUsd);
+  }
+
+  let released = false;
+  const releaseReservation = () => {
+    if (released) return;
+    released = true;
+    for (const reservationKey of reservationKeys) {
+      const scopeReservations = state.reservations.get(reservationKey);
+      if (!scopeReservations) continue;
+      scopeReservations.delete(reservationToken);
+      if (scopeReservations.size === 0) state.reservations.delete(reservationKey);
+    }
+  };
+
+  return {
+    budgetMatched: true,
+    rejectionResponse: null,
+    releaseReservation,
+    accountingTimestamp,
+  };
 }

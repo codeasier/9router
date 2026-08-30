@@ -151,4 +151,21 @@ describe("Xquik search provider", () => {
     });
     expect(payload.pagination).toEqual({ has_more: true, next_cursor: "cursor-2" });
   });
+
+  it("does not fall back from a dedicated API to chat search when disabled", async () => {
+    const upstream = vi.fn(async () => new Response("temporary failure", { status: 500 }));
+    vi.stubGlobal("fetch", upstream);
+
+    const result = await handleSearchCore({
+      body: { query: PARAMS.query },
+      provider: { id: "xquik", searchViaChat: { defaultModel: "fallback-model" } },
+      providerConfig: CONFIG,
+      credentials: { apiKey: "xq_test_key" },
+      allowChatFallback: false,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe(500);
+    expect(upstream).toHaveBeenCalledTimes(1);
+  });
 });
