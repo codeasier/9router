@@ -161,6 +161,20 @@ describe("CursorExecutor AgentService exec_request handling", () => {
     expect(seenProxy).toEqual(proxyOptions);
   });
 
+  it("fails closed for a strict application relay without opening an h2 stream", async () => {
+    const executor = new CursorExecutor();
+
+    await expect(executor.openAgentHttp2Stream(
+      "https://agent.api5.cursor.sh/agent.v1.AgentService/Run",
+      {},
+      null,
+      {
+        vercelRelayUrl: "https://relay.example/api/proxy",
+        strictProxy: true,
+      },
+    )).rejects.toThrow(/application-layer relay.*strictProxy=true/);
+  });
+
   it("surfaces an empty Agent HTTP 200 as empty_completion", async () => {
     const { result } = await runAgent({ frames: [], stream: false });
     expect(result.response.status).toBe(502);
