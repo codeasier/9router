@@ -199,9 +199,18 @@ export function resolveChatRouting({
   }
 
   const runtimeTransport = resolveTransport(provider, sourceFormat);
+  // Per-model guard: when a model declares supportedFormats, only use the
+  // sourceFormat-matched transport if that format is declared (opencode-go models
+  // differ — kimi/glm only do /chat/completions). Undeclared models keep the
+  // upstream default (use the transport), preserving behavior for glm/deepseek/...
   const useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat))
     ? runtimeTransport
     : null;
-  const targetFormat = modelTargetFormat || useTransport?.format || providerFormat;
+  // A source-format-matched endpoint keeps the request lossless. Prefer it over a
+  // model-level targetFormat, which is only the fallback for clients whose wire
+  // format has no supported transport (for example MiniMax-M3: OpenAI clients
+  // should stay on /chat/completions; other clients can fall back to its declared
+  // Claude target). Mirrors upstream v0.5.59 (fix #3418).
+  const targetFormat = useTransport?.format || modelTargetFormat || providerFormat;
   return { targetFormat, useTransport, override, thinkingIntent };
 }
