@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import Modal from "./Modal";
 import ProviderIcon from "./ProviderIcon";
 import CapacityBadges from "./CapacityBadges";
+import { loadModelSelectCombos, toComboModelOption } from "./modelSelectCombos";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, getProviderAlias } from "@/shared/constants/providers";
@@ -94,10 +95,7 @@ export default function ModelSelectModal({
 
   const fetchCombos = async () => {
     try {
-      const res = await fetch("/api/combos");
-      if (!res.ok) throw new Error(`Failed to fetch combos: ${res.status}`);
-      const data = await res.json();
-      setCombos(data.combos || []);
+      setCombos(await loadModelSelectCombos());
     } catch (error) {
       console.error("Error fetching combos:", error);
       setCombos([]);
@@ -507,7 +505,7 @@ export default function ModelSelectModal({
                 return (
                   <button
                     key={combo.id}
-                    onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
+                    onClick={() => handleSelect(toComboModelOption(combo))}
                     className={`
                       px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer flex items-center gap-1
                       ${isSelected
