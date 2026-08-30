@@ -13,6 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
+import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
@@ -43,6 +44,10 @@ export async function handleImageGeneration(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
+  // Per-key policy guard (entry)
+  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  if (!policyGuard.ok) return policyGuard.response;
+
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
 
@@ -53,25 +58,42 @@ export async function handleImageGeneration(request) {
     const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("IMAGE", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
+    return policyGuard.wrap(await handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey }),
       log,
       comboName: modelStr,
       comboStrategy,
       comboStickyLimit,
-    });
+    }));
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId });
+  return policyGuard.wrap(await handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey }));
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId } = {}) {
+/**
+ * Shared single-model image execution (generation or edit) — also used by the
+ * image edits handler. Validates credentials and drives account fallback.
+ * @param {object} body - Parsed request body
+ * @param {string} modelStr - Model or combo string
+ * @param {object} [options]
+ * @param {boolean} [options.wantsStream]
+ * @param {boolean} [options.binaryOutput]
+ * @param {string} [options.preferredConnectionId]
+ * @param {string} [options.operation] - "generation" (default) or "edit"
+ * @param {string} [options.apiKey] - client API key for per-provider budget checks
+ */
+export async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, operation = "generation", apiKey = null } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
+
+  const budgetPolicy = await evaluateProviderBudget(apiKey, provider, {
+    operation: operation === "edit" ? "image edit" : "image generation",
+  });
+  if (budgetPolicy.rejectionResponse) return budgetPolicy.rejectionResponse;
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
@@ -80,6 +102,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       modelInfo: { provider, model },
       credentials: null,
       binaryOutput,
+      operation,
     });
     if (result.success) return result.response;
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "Image generation failed");
@@ -113,6 +136,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       credentials: refreshedCredentials,
       streamToClient: wantsStream,
       binaryOutput,
+      operation,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           accessToken: newCreds.accessToken,
@@ -127,6 +151,8 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     });
 
     if (result.success) return result.response;
+
+    if (result.shouldFallback === false) return result.response;
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
 

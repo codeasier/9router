@@ -9,6 +9,7 @@ import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthW
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
+import { applyModelOverridePatch, protocolOptionsForModel } from "open-sse/services/modelOverrides.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
@@ -67,6 +68,8 @@ export default function ProviderDetailPage() {
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
+  const [modelOverrides, setModelOverrides] = useState({});
+  const modelOverridesRef = useRef({});
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [liveModels, setLiveModels] = useState([]);
@@ -318,6 +321,9 @@ export default function ProviderDetailPage() {
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
+      const loadedOverrides = settingsData.modelOverrides || {};
+      modelOverridesRef.current = loadedOverrides;
+      setModelOverrides(loadedOverrides);
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
       setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
@@ -431,6 +437,64 @@ export default function ProviderDetailPage() {
   const handleThinkingModeChange = (mode) => {
     setThinkingMode(mode);
     saveThinkingConfig(mode);
+  };
+
+  const overrideKey = (modelId) => `${providerId}/${modelId}`;
+
+  const saveModelOverride = async (modelId, patch) => {
+    const key = overrideKey(modelId);
+    const next = applyModelOverridePatch(modelOverridesRef.current, key, patch);
+    modelOverridesRef.current = next;
+    setModelOverrides(next);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelOverrides: next }),
+      });
+      if (!res.ok) {
+        console.log("Error saving model override:", await res.text());
+      }
+    } catch (error) {
+      console.log("Error saving model override:", error);
+    }
+  };
+
+  const getOverrideProps = (modelId) => {
+    const current = modelOverrides[overrideKey(modelId)] || {};
+    const levels = getThinkingLevels(providerId, modelId);
+    const thinkingOptions = levels?.length
+      ? [
+          { value: "auto", label: `${translate("Thinking")}: ${translate("Auto")}` },
+          ...levels.map((level) => ({ value: level, label: `${translate("Thinking")}: ${level}` })),
+        ]
+      : null;
+    const formats = protocolOptionsForModel(providerId, modelId, {
+      isOpenAICompatible,
+      isAnthropicCompatible,
+    });
+    const protocolLabel = {
+      openai: translate("Chat"),
+      "openai-responses": translate("Responses"),
+      claude: translate("Messages"),
+    };
+    const protocolOptions = formats.length > 1
+      ? [
+          { value: "auto", label: `${translate("Protocol")}: ${translate("Auto")}` },
+          ...formats.map((format) => ({
+            value: format,
+            label: `${translate("Protocol")}: ${protocolLabel[format] || format}`,
+          })),
+        ]
+      : null;
+    return {
+      thinkingValue: current.thinking || "auto",
+      thinkingOptions,
+      onThinkingChange: thinkingOptions ? (value) => saveModelOverride(modelId, { thinking: value }) : undefined,
+      protocolValue: current.protocol || "auto",
+      protocolOptions,
+      onProtocolChange: protocolOptions ? (value) => saveModelOverride(modelId, { protocol: value }) : undefined,
+    };
   };
 
   const saveAutoPing = async (next) => {
@@ -1088,6 +1152,7 @@ export default function ProviderDetailPage() {
           onDeleteCustomModel={(modelId) => handleDeleteCustomModel(modelId, "llm", providerStorageAlias)}
           connections={connections}
           isAnthropic={isAnthropicCompatible}
+          getOverrideProps={getOverrideProps}
         />
       );
     }
@@ -1134,6 +1199,7 @@ export default function ProviderDetailPage() {
             isFree={false}
             caps={getCaps(`${providerId}/${model.id}`)}
             thinkingSuffix={resolveThinkingSuffix(model.id)}
+            {...getOverrideProps(model.id)}
           />
         ))}
 
@@ -1160,6 +1226,7 @@ export default function ProviderDetailPage() {
               onDisable={() => handleDisableModel(model.id)}
               caps={getCaps(`${providerId}/${model.id}`)}
               thinkingSuffix={resolveThinkingSuffix(model.id)}
+              {...getOverrideProps(model.id)}
             />
           );
         })}

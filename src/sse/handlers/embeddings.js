@@ -13,6 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
+import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 function exactEmbeddingUsage(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.estimated === true) return null;
@@ -65,6 +66,16 @@ export async function handleEmbeddings(request) {
     }
   }
 
+  // Per-key policy guard (entry): whole-key breaker + "*" budgets + concurrency slot
+  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  if (!policyGuard.ok) return policyGuard.response;
+
+  return policyGuard.wrap(await handleEmbeddingsInner(request, body, url, apiKey));
+}
+
+async function handleEmbeddingsInner(request, body, url, apiKey) {
+  const modelStr = body.model;
+
   if (!modelStr) {
     log.warn("EMBEDDINGS", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
@@ -82,6 +93,10 @@ export async function handleEmbeddings(request) {
   }
 
   const { provider, model } = modelInfo;
+
+  // Per-attempt provider budget check (provider-specific budgets)
+  const budgetReject = await checkProviderBudgetResponse(apiKey, provider);
+  if (budgetReject) return budgetReject;
 
   if (modelStr !== `${provider}/${model}`) {
     log.info("ROUTING", `${modelStr} → ${provider}/${model}`);

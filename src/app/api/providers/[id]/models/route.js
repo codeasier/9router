@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { mergeCustomHeaders } from "../../../../../../open-sse/utils/customHeaders.js";
 import { getProviderConnectionById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
@@ -9,7 +10,7 @@ import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
-import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { resolveConnectionProxyConfig, toCredentialProxyFields } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
@@ -275,10 +276,18 @@ const PROVIDER_MODELS_CONFIG = {
   },
   cursor: {
     customResolver: async (connection) => {
+      const proxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
       const result = await resolveCursorModels({
         accessToken: connection.accessToken,
         providerSpecificData: connection.providerSpecificData || {},
-      }, { forceRefresh: true, log: console });
+      }, {
+        forceRefresh: true,
+        log: console,
+        proxyOptions: {
+          enabled: proxy.connectionProxyEnabled === true,
+          ...toCredentialProxyFields(proxy),
+        },
+      });
       if (result?.models?.length) return { models: result.models };
       return {
         models: getStaticProviderModels("cursor"),
@@ -456,10 +465,10 @@ export async function GET(request, { params }) {
       const url = `${baseUrl.replace(/\/$/, "")}/models`;
       const response = await fetch(url, {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${connection.apiKey}`,
-        },
+         headers: mergeCustomHeaders({
+           "Content-Type": "application/json",
+           "Authorization": `Bearer ${connection.apiKey}`,
+         }, connection.providerSpecificData?.headers),
       });
 
       if (!response.ok) {
@@ -495,12 +504,12 @@ export async function GET(request, { params }) {
       const url = `${baseUrl}/models`;
       const response = await fetch(url, {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": connection.apiKey,
-          "anthropic-version": "2023-06-01",
-          "Authorization": `Bearer ${connection.apiKey}`
-        },
+         headers: mergeCustomHeaders({
+           "Content-Type": "application/json",
+           "x-api-key": connection.apiKey,
+           "anthropic-version": "2023-06-01",
+           "Authorization": `Bearer ${connection.apiKey}`
+         }, connection.providerSpecificData?.headers),
       });
 
       if (!response.ok) {

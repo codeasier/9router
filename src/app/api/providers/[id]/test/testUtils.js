@@ -18,6 +18,7 @@ import {
   KIMCHI_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
+import { mergeCustomHeaders } from "../../../../../../open-sse/utils/customHeaders.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -468,6 +469,7 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
     connectionProxyEnabled: true,
     connectionProxyUrl: effectiveProxy.connectionProxyUrl,
     connectionNoProxy: effectiveProxy.connectionNoProxy || "",
+    strictProxy: effectiveProxy.strictProxy === true,
   });
 }
 
@@ -477,7 +479,10 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
     if (!modelsBase) return { valid: false, error: "Missing base URL" };
     try {
       const res = await fetchWithConnectionProxy(`${modelsBase.replace(/\/$/, "")}/models`, {
-        headers: { "Authorization": `Bearer ${connection.apiKey}` },
+         headers: mergeCustomHeaders(
+           { "Authorization": `Bearer ${connection.apiKey}` },
+           connection.providerSpecificData?.headers,
+         ),
       }, effectiveProxy);
       return { valid: res.ok, error: res.ok ? null : "Invalid API key or base URL" };
     } catch (err) {
@@ -495,12 +500,12 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       const model = connection.defaultModel || "claude-3-haiku-20240307";
       const res = await fetchWithConnectionProxy(messagesUrl, {
         method: "POST",
-        headers: {
-          "x-api-key": connection.apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-          "Authorization": `Bearer ${connection.apiKey}`,
-        },
+         headers: mergeCustomHeaders({
+           "x-api-key": connection.apiKey,
+           "anthropic-version": "2023-06-01",
+           "content-type": "application/json",
+           "Authorization": `Bearer ${connection.apiKey}`,
+         }, connection.providerSpecificData?.headers),
         body: JSON.stringify({
           model,
           max_tokens: 1,

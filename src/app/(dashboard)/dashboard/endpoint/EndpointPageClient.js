@@ -17,6 +17,8 @@ import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
+import PolicyEditorModal from "./components/PolicyEditorModal";
+import BulkPolicyEditorModal from "./components/BulkPolicyEditorModal";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +26,10 @@ export default function APIPageClient({ machineId }) {
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  const [policyEditorKey, setPolicyEditorKey] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkEditorOpen, setBulkEditorOpen] = useState(false);
+  const [bulkResetting, setBulkResetting] = useState(false);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -76,6 +82,29 @@ export default function APIPageClient({ machineId }) {
 
   // API key visibility toggle state
   const [visibleKeys, setVisibleKeys] = useState(new Set());
+
+  // Live per-key policy status (in-flight / spend / breakers), polled from /api/keys/status
+  const [keyStatuses, setKeyStatuses] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      if (document.hidden) return;
+      try {
+        const res = await fetch("/api/keys/status", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setKeyStatuses(data.statuses || {});
+      } catch { /* transient poll errors */ }
+    };
+    poll();
+    const timer = setInterval(poll, 10000);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, []);
 
   // Client-side local/remote detection (UI hint only, not a security gate)
   const [isRemoteHost, setIsRemoteHost] = useState(false);
@@ -275,6 +304,12 @@ export default function APIPageClient({ machineId }) {
         } catch { /* fall through to empty render */ }
       }
       setKeys(existing);
+      // Prune selection to only existing keys
+      setSelectedIds(prev => {
+        const existingIds = new Set(existing.map(k => k.id));
+        const next = new Set([...prev].filter(id => existingIds.has(id)));
+        return next.size === prev.size ? prev : next;
+      });
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
@@ -653,10 +688,20 @@ export default function APIPageClient({ machineId }) {
         try {
           const res = await fetch(`/api/keys/${id}`, { method: "DELETE" });
           if (res.ok) {
-            setKeys(keys.filter((k) => k.id !== id));
+            setKeys(prev => prev.filter((k) => k.id !== id));
             setVisibleKeys(prev => {
               const next = new Set(prev);
               next.delete(id);
+              return next;
+            });
+            setSelectedIds(prev => {
+              const next = new Set(prev);
+              next.delete(id);
+              return next;
+            });
+            setKeyStatuses(prev => {
+              const next = { ...prev };
+              delete next[id];
               return next;
             });
           }
@@ -680,6 +725,112 @@ export default function APIPageClient({ machineId }) {
     } catch (error) {
       console.log("Error toggling key:", error);
     }
+  };
+
+  const handlePolicySaved = (updatedKey) => {
+    setKeys(prev => prev.map(k => (k.id === updatedKey.id ? { ...k, policy: updatedKey.policy } : k)));
+  };
+
+  const handlePolicyReset = async (id, newStatus) => {
+    if (newStatus) setKeyStatuses(prev => ({ ...prev, [id]: newStatus }));
+    else {
+      try {
+        const res = await fetch(`/api/keys/${id}/status`, { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          setKeyStatuses(prev => ({ ...prev, [id]: data.status }));
+        }
+      } catch {}
+    }
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds(prev => {
+      if (prev.size === keys.length) return new Set();
+      return new Set(keys.map(k => k.id));
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleBulkReset = async () => {
+    if (selectedIds.size === 0 || bulkResetting) return;
+    setBulkResetting(true);
+    try {
+      const res = await fetch("/api/keys/bulk/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: Array.from(selectedIds) }),
+      });
+      const data = await res.json();
+      if (res.ok && data.results) {
+        const nextStatuses = { ...keyStatuses };
+        for (const r of data.results) {
+          if (r.ok && r.status) nextStatuses[r.id] = r.status;
+        }
+        setKeyStatuses(nextStatuses);
+      }
+    } catch (e) {
+      console.log("Bulk reset failed:", e);
+    } finally {
+      setBulkResetting(false);
+    }
+  };
+
+  const handleSingleReset = async (id) => {
+    try {
+      const res = await fetch(`/api/keys/${id}/reset`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status) setKeyStatuses(prev => ({ ...prev, [id]: data.status }));
+      }
+    } catch (e) { console.log("Reset failed:", e); }
+  };
+
+  const handleBulkPolicySaved = (results) => {
+    if (!Array.isArray(results)) return;
+    const policyById = new Map();
+    for (const r of results) {
+      if (r.ok && r.key) policyById.set(r.id, r.key.policy);
+    }
+    if (policyById.size > 0) {
+      setKeys(prev => prev.map(k => policyById.has(k.id) ? { ...k, policy: policyById.get(k.id) } : k));
+    }
+    // Refresh statuses for updated keys
+    (async () => {
+      try {
+        const res = await fetch("/api/keys/status", { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          setKeyStatuses(data.statuses || {});
+        }
+      } catch {}
+    })();
+    clearSelection();
+  };
+
+  const policySummary = (policy) => {
+    if (!policy) return null;
+    const parts = [];
+    if (policy.budgets?.length) {
+      parts.push(...policy.budgets.map(b => `${b.provider === "*" ? "all" : b.provider}: $${b.limitUsd}/${b.period}`));
+    }
+    if (policy.maxConcurrent) parts.push(`≤${policy.maxConcurrent} concurrent`);
+    return parts.join(" · ");
+  };
+
+  const fmtStatusUsd = (v) => {
+    if (v == null || !Number.isFinite(v)) return "0";
+    return v >= 100 ? v.toFixed(0) : v.toFixed(2);
   };
 
   const maskKey = (fullKey) => {
@@ -994,6 +1145,37 @@ export default function APIPageClient({ machineId }) {
           </div>
         )}
 
+        {keys.length > 0 && (
+          <div className="flex items-center justify-between mb-3 px-1 py-2 rounded-lg bg-surface-2/50 border border-border/50">
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={selectedIds.size === keys.length && keys.length > 0}
+                onChange={toggleSelectAll}
+                className="rounded border-border w-4 h-4"
+              />
+              <span className={selectedIds.size > 0 ? "text-primary font-medium" : "text-text-muted"}>
+                {selectedIds.size > 0 ? `${selectedIds.size} selected` : "Select all"}
+              </span>
+            </label>
+            {selectedIds.size > 0 ? (
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleBulkReset} disabled={bulkResetting}>
+                  {bulkResetting ? "Resetting…" : `Reset (${selectedIds.size})`}
+                </Button>
+                <Button size="sm" icon="tune" onClick={() => setBulkEditorOpen(true)}>
+                  Bulk Edit ({selectedIds.size})
+                </Button>
+                <button onClick={clearSelection} className="text-xs text-text-muted hover:text-primary px-2 py-1">
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <span className="text-xs text-text-muted">Tick keys to bulk edit policy or reset quota</span>
+            )}
+          </div>
+        )}
+
         {keys.length === 0 ? (
           <div className="text-center py-12">
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 text-primary mb-4">
@@ -1007,13 +1189,27 @@ export default function APIPageClient({ machineId }) {
           </div>
         ) : (
           <div className="flex flex-col">
-            {keys.map((key) => (
+            {keys.map((key) => {
+              const st = keyStatuses[key.id];
+              const breakerOpen = !!(st?.breaker || st?.providerBreakers?.length);
+              const isSelected = selectedIds.has(key.id);
+              return (
               <div
                 key={key.id}
-                className={`group flex items-center justify-between py-3 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 ${key.isActive === false ? "opacity-60" : ""}`}
+                className={`group flex items-center gap-3 py-3 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 ${key.isActive === false ? "opacity-60" : ""} ${isSelected ? "bg-primary/5 -mx-2 px-2 rounded" : ""}`}
               >
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggleSelect(key.id)}
+                  className="w-4 h-4 rounded border-border shrink-0"
+                  title={isSelected ? "Deselect" : "Select for bulk actions"}
+                />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium">{key.name}</p>
+                  <p className="text-sm font-medium flex items-center gap-2">
+                    {key.name}
+                    {breakerOpen && <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-500 font-medium"><span className="material-symbols-outlined text-[12px]">block</span>limited</span>}
+                  </p>
                   <div className="flex items-center gap-2 mt-1">
                     <code className="text-xs text-text-muted font-mono">
                       {visibleKeys.has(key.id) ? key.key : maskKey(key.key)}
@@ -1039,11 +1235,57 @@ export default function APIPageClient({ machineId }) {
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
                   </p>
+                  {policySummary(key.policy) && (
+                    <p className="text-xs text-primary/80 mt-1 flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[12px]">tune</span>
+                      {policySummary(key.policy)}
+                    </p>
+                  )}
+                  {st && (
+                    <p className={`text-xs mt-1 flex items-center gap-2 flex-wrap ${breakerOpen ? "text-red-500" : "text-text-muted"}`}>
+                      {breakerOpen && (
+                        <span className="inline-flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[12px]">block</span>
+                          breaker open
+                        </span>
+                      )}
+                      {st.maxConcurrent ? (
+                        <span className={st.inflight >= st.maxConcurrent ? "text-red-500" : undefined}>
+                          {st.inflight}/{st.maxConcurrent} in-flight
+                        </span>
+                      ) : st.inflight > 0 ? (
+                        <span>{st.inflight} in-flight</span>
+                      ) : null}
+                      <span>today ${fmtStatusUsd(st.usage?.day)}</span>
+                      <span>week ${fmtStatusUsd(st.usage?.week)}</span>
+                      {st.budgets?.length > 0 && (
+                        <span>
+                          {st.budgets.map((b) => `${b.provider === "*" ? "all" : b.provider}: $${fmtStatusUsd(b.spentUsd)}/${fmtStatusUsd(b.limitUsd)} ${b.period}`).join(" · ")}
+                        </span>
+                      )}
+                    </p>
+                  )}
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPolicyEditorKey(key)}
+                    className={`p-2 rounded transition-all ${key.policy ? "text-primary hover:bg-primary/10" : "text-text-muted hover:bg-black/5 dark:hover:bg-white/5 hover:text-primary"}`}
+                    title="Configure policy (budgets / concurrency / breaker)"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">tune</span>
+                  </button>
+                  {breakerOpen && (
+                    <button
+                      onClick={() => handleSingleReset(key.id)}
+                      className="p-2 rounded hover:bg-amber-500/10 text-amber-600 dark:text-amber-400 transition-colors"
+                      title="Reset breaker (clear quota cooldown)"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">restart_alt</span>
+                    </button>
+                  )}
                   <Toggle
                     size="sm"
                     checked={key.isActive ?? true}
@@ -1071,10 +1313,27 @@ export default function APIPageClient({ machineId }) {
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>
+
+      {/* Policy Editor Modal */}
+      <PolicyEditorModal
+        isOpen={!!policyEditorKey}
+        apiKeyRecord={policyEditorKey}
+        onClose={() => setPolicyEditorKey(null)}
+        onSaved={handlePolicySaved}
+        onReset={handlePolicyReset}
+      />
+      <BulkPolicyEditorModal
+        isOpen={bulkEditorOpen}
+        selectedIds={selectedIds}
+        keys={keys}
+        onClose={() => setBulkEditorOpen(false)}
+        onSaved={handleBulkPolicySaved}
+      />
 
       {/* Add Key Modal */}
       <Modal

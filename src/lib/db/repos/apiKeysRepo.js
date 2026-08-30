@@ -3,12 +3,17 @@ import { getAdapter } from "../driver.js";
 
 function rowToKey(row) {
   if (!row) return null;
+  let policy = null;
+  if (row.policy) {
+    try { policy = JSON.parse(row.policy); } catch { policy = null; }
+  }
   return {
     id: row.id,
     key: row.key,
     name: row.name,
     machineId: row.machineId,
     isActive: row.isActive === 1 || row.isActive === true,
+    policy,
     createdAt: row.createdAt,
   };
 }
@@ -52,9 +57,10 @@ export async function updateApiKey(id, data) {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
     const merged = { ...rowToKey(row), ...data };
+    const policyJson = merged.policy != null ? JSON.stringify(merged.policy) : null;
     db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, id]
+      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, policy = ? WHERE id = ?`,
+      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, policyJson, id]
     );
     result = merged;
   });
@@ -72,4 +78,15 @@ export async function validateApiKey(key) {
   const row = db.get(`SELECT isActive FROM apiKeys WHERE key = ?`, [key]);
   if (!row) return false;
   return row.isActive === 1 || row.isActive === true;
+}
+
+// Resolve full apiKey record by raw key value. Used by routes that need the
+// stable `id` for cache/rate-limit bookkeeping after authentication. Returns
+// null for missing keys. Active state is intentionally not enforced here —
+// callers (e.g. /v1/usage) decide whether to accept the key.
+export async function getApiKeyByKey(key) {
+  if (!key || typeof key !== "string") return null;
+  const db = await getAdapter();
+  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+  return rowToKey(row);
 }
