@@ -285,6 +285,17 @@ function resolveConnectionProxyUrl(targetUrl, proxyOptions) {
   return normalizeProxyUrl(proxyUrlRaw);
 }
 
+/**
+ * Resolve the outbound proxy for a target URL.
+ * Connection proxy pool wins; otherwise HTTP(S)_PROXY / ALL_PROXY from env
+ * (including 9Router Settings → Outbound Proxy).
+ */
+export function resolveOutboundProxyUrl(targetUrl, proxyOptions = null) {
+  const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
+  if (connectionProxyUrl) return connectionProxyUrl;
+  return normalizeProxyUrl(getEnvProxyUrl(targetUrl));
+}
+
 // ISP DPI (VN → api.anthropic.com) RSTs Node's default TLS ClientHello curve
 // list; a single curve rewrites the fingerprint enough to pass. Empirically:
 // default agent = ECONNRESET 100%, X25519 = through 100%.
@@ -498,9 +509,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     return await rawFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
   }
 
-  const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
-  const envProxyUrl = connectionProxyUrl ? null : normalizeProxyUrl(getEnvProxyUrl(targetUrl));
-  const proxyUrl = connectionProxyUrl || envProxyUrl;
+  const proxyUrl = resolveOutboundProxyUrl(targetUrl, proxyOptions);
   const forceFreshSocket = proxyOptions?.forceFreshSocket === true || options?.forceFreshSocket === true;
 
   // Protocol adapters that own their transport (wreq-js TLS impersonation)
