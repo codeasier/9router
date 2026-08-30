@@ -317,6 +317,11 @@ export async function saveRequestUsage(entry) {
     if (inserted) {
       pushToRing(entry);
       scheduleStatsEvent("update", 250);
+      // Keep per-key budget accounting ahead of its TTL cache (fire-and-forget;
+      // dynamic import avoids a static cycle keyPolicy → localDb → usageRepo).
+      import("@/sse/services/keyPolicy.js")
+        .then(({ bumpBudgetCache }) => bumpBudgetCache(entry.apiKey, entry.provider, entry.cost))
+        .catch(() => {});
     }
   } catch (e) {
     console.error("Failed to save usage stats:", e);

@@ -13,6 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
+import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
@@ -43,6 +44,10 @@ export async function handleImageGeneration(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
+  // Per-key policy guard (entry)
+  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  if (!policyGuard.ok) return policyGuard.response;
+
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
 
@@ -53,18 +58,18 @@ export async function handleImageGeneration(request) {
     const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("IMAGE", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
+    return policyGuard.wrap(await handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey }),
       log,
       comboName: modelStr,
       comboStrategy,
       comboStickyLimit,
-    });
+    }));
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId });
+  return policyGuard.wrap(await handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey }));
 }
 
 /**
@@ -77,12 +82,17 @@ export async function handleImageGeneration(request) {
  * @param {boolean} [options.binaryOutput]
  * @param {string} [options.preferredConnectionId]
  * @param {string} [options.operation] - "generation" (default) or "edit"
+ * @param {string} [options.apiKey] - client API key for per-provider budget checks
  */
-export async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, operation = "generation" } = {}) {
+export async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, operation = "generation", apiKey = null } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
+
+  // Per-attempt provider budget check
+  const budgetReject = await checkProviderBudgetResponse(apiKey, provider);
+  if (budgetReject) return budgetReject;
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {

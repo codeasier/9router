@@ -13,6 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
+import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 /**
  * Handle web search request for the SSE/Next.js server.
@@ -58,6 +59,10 @@ export async function handleSearch(request) {
     }
   }
 
+  // Per-key policy guard (entry)
+  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  if (!policyGuard.ok) return policyGuard.response;
+
   if (!providerInput || typeof providerInput !== "string") {
     log.warn("SEARCH", "Missing provider/model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: provider (or model)");
@@ -76,7 +81,7 @@ export async function handleSearch(request) {
     const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("SEARCH", `Combo "${providerInput}" with ${comboModels.length} providers (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
+    return policyGuard.wrap(await handleComboChat({
       body,
       models: comboModels,
       handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, request, apiKey, settings),
@@ -84,10 +89,10 @@ export async function handleSearch(request) {
       comboName: providerInput,
       comboStrategy,
       comboStickyLimit
-    });
+    }));
   }
 
-  return handleSingleProviderSearch(body, providerInput, request, apiKey, settings);
+  return policyGuard.wrap(await handleSingleProviderSearch(body, providerInput, request, apiKey, settings));
 }
 
 async function handleSingleProviderSearch(body, providerInput, request, apiKey, settings) {
@@ -99,6 +104,10 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
     log.warn("SEARCH", "Unknown provider", { provider: providerInput });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Unknown provider: ${providerInput}`);
   }
+
+  // Per-attempt provider budget check
+  const budgetReject = await checkProviderBudgetResponse(apiKey, providerId);
+  if (budgetReject) return budgetReject;
 
   const providerConfig = resolvedProvider.searchConfig;
   const supportsSearch = !!providerConfig || !!resolvedProvider.searchViaChat;

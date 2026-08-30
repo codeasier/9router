@@ -6,6 +6,7 @@ import { HTTP_STATUS, IMAGE_EDIT_LIMITS } from "open-sse/config/runtimeConfig.js
 import { handleComboChat } from "open-sse/services/combo.js";
 import { handleSingleModelImage } from "./imageGeneration.js";
 import * as log from "../utils/logger.js";
+import { enforceKeyPolicy } from "../services/keyPolicy.js";
 
 function fieldString(value) {
   return typeof value === "string" ? value : null;
@@ -69,6 +70,10 @@ export async function handleImageEdit(request) {
     const valid = await isValidApiKey(apiKey);
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
+
+  // Per-key policy guard (entry)
+  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  if (!policyGuard.ok) return policyGuard.response;
 
   const contentLength = Number(request.headers.get("content-length"));
   const multipartOverheadBytes = 64 * 1024;
@@ -161,16 +166,16 @@ export async function handleImageEdit(request) {
     const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("IMAGE", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
+    return policyGuard.wrap(await handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, operation: "edit" }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, operation: "edit", apiKey }),
       log,
       comboName: modelStr,
       comboStrategy,
       comboStickyLimit,
-    });
+    }));
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, operation: "edit" });
+  return policyGuard.wrap(await handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, operation: "edit", apiKey }));
 }

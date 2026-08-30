@@ -352,6 +352,19 @@ export function extractApiKey(request) {
     return xApiKey;
   }
 
+  // Check Gemini x-goog-api-key header (parity with dashboardGuard/v1beta routes)
+  const googApiKey = request.headers.get("x-goog-api-key");
+  if (googApiKey) {
+    return googApiKey;
+  }
+
+  // Check ?key= query parameter (Gemini native clients)
+  try {
+    const url = new URL(request.url);
+    const queryKey = url.searchParams.get("key");
+    if (queryKey) return queryKey;
+  } catch { /* non-standard URL — ignore */ }
+
   return null;
 }
 
