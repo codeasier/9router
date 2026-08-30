@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createProviderNode, getProviderNodes } from "@/models";
 import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX } from "@/shared/constants/providers";
 import { generateId } from "@/shared/utils";
+import { normalizeCustomHeaders, resolveCustomHeaders } from "../../../../open-sse/utils/customHeaders.js";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,14 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { name, prefix, apiType, baseUrl, type } = body;
+    const { name, prefix, apiType, baseUrl, type, headers } = body;
+    let normalizedHeaders;
+    try {
+      normalizedHeaders = normalizeCustomHeaders(headers);
+      resolveCustomHeaders(normalizedHeaders);
+    } catch (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
 
     if (!name?.trim()) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -56,6 +64,7 @@ export async function POST(request) {
         prefix: prefix.trim(),
         apiType,
         baseUrl: (baseUrl || OPENAI_COMPATIBLE_DEFAULTS.baseUrl).trim(),
+        headers: normalizedHeaders,
         name: name.trim(),
       });
       return NextResponse.json({ node }, { status: 201 });
@@ -73,6 +82,7 @@ export async function POST(request) {
         type: "custom-embedding",
         prefix: prefix.trim(),
         baseUrl: sanitizedBaseUrl,
+        headers: normalizedHeaders,
         name: name.trim(),
       });
       return NextResponse.json({ node }, { status: 201 });
@@ -91,6 +101,7 @@ export async function POST(request) {
         type: "anthropic-compatible",
         prefix: prefix.trim(),
         baseUrl: sanitizedBaseUrl,
+        headers: normalizedHeaders,
         name: name.trim(),
       });
       return NextResponse.json({ node }, { status: 201 });
