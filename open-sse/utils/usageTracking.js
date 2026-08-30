@@ -192,7 +192,8 @@ export function canonicalizeUsage(usage) {
     // OpenAI/Gemini path (or already-canonical input): prompt already includes cached_tokens.
     // Mirror the cacheCreation fallback above: buildUsage() only ever emits the
     // nested prompt_tokens_details.cached_tokens shape, so without this the
-    // cache-read count is silently dropped on every buildUsage()-derived usage.
+    // cache-read count is silently dropped on every buildUsage()-derived usage
+    // (Chat→Responses path persisted cached_tokens: 0).
     cached = num(usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens);
   }
 
