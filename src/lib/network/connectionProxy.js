@@ -56,6 +56,22 @@ function normalizeLegacyProxy(providerSpecificData = {}) {
 }
 
 /**
+ * Fields copied onto credentials.providerSpecificData after pool resolution.
+ * Chat and other executors read this object to build proxyOptions — omitting a
+ * field here silently drops the setting (strictProxy used to be lost this way).
+ */
+export function toCredentialProxyFields(resolvedProxy = {}) {
+  return {
+    connectionProxyEnabled: resolvedProxy.connectionProxyEnabled,
+    connectionProxyUrl: resolvedProxy.connectionProxyUrl,
+    connectionNoProxy: resolvedProxy.connectionNoProxy,
+    connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
+    vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+    strictProxy: resolvedProxy.strictProxy === true,
+  };
+}
+
+/**
  * Resolve final proxy configuration.
  *
  * Priority:
