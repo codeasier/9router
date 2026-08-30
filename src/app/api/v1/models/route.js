@@ -16,7 +16,7 @@ import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
-import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { resolveConnectionProxyConfig, toCredentialProxyFields } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { mergeCustomHeaders } from "../../../../../open-sse/utils/customHeaders.js";
 
@@ -109,10 +109,7 @@ const LIVE_MODEL_RESOLVERS = {
       log: console,
       proxyOptions: {
         enabled: proxy.connectionProxyEnabled === true,
-        connectionProxyEnabled: proxy.connectionProxyEnabled === true,
-        connectionProxyUrl: proxy.connectionProxyUrl || "",
-        connectionNoProxy: proxy.connectionNoProxy || "",
-        strictProxy: proxy.strictProxy === true,
+        ...toCredentialProxyFields(proxy),
       },
     });
     return result?.models?.length ? { models: result.models } : null;

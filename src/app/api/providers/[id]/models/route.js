@@ -10,7 +10,7 @@ import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
-import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import { resolveConnectionProxyConfig, toCredentialProxyFields } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
@@ -285,10 +285,7 @@ const PROVIDER_MODELS_CONFIG = {
         log: console,
         proxyOptions: {
           enabled: proxy.connectionProxyEnabled === true,
-          connectionProxyEnabled: proxy.connectionProxyEnabled === true,
-          connectionProxyUrl: proxy.connectionProxyUrl || "",
-          connectionNoProxy: proxy.connectionNoProxy || "",
-          strictProxy: proxy.strictProxy === true,
+          ...toCredentialProxyFields(proxy),
         },
       });
       if (result?.models?.length) return { models: result.models };
