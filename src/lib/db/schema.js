@@ -1,9 +1,8 @@
-// ⚠️ AGENT/DEV: Bump this by +1 EVERY TIME you change the schema below
-// (add/remove/alter a table, column, or index in TABLES). It drives the
-// pre-change safety backup in migrate.js: when the stored version is lower,
-// one lightweight DB backup is taken before applying schema changes. Forgetting
-// to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 4;
+// Official v0.5.59 schema namespace. Fork-only changes must not bump this.
+export const SCHEMA_VERSION = 1;
+
+// Fork schema namespace. Bump for fork table, column, or index changes below.
+export const FORK_SCHEMA_VERSION = 4;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
