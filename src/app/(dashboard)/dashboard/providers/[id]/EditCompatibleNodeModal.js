@@ -10,6 +10,7 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
     prefix: "",
     apiType: "chat",
     baseUrl: "https://api.openai.com/v1",
+    headers: "{}",
   });
   const [saving, setSaving] = useState(false);
   const [checkKey, setCheckKey] = useState("");
@@ -24,6 +25,7 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
         prefix: node.prefix || "",
         apiType: node.apiType || "chat",
         baseUrl: node.baseUrl || (isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"),
+        headers: JSON.stringify(node.headers || {}, null, 2),
       });
     }
   }, [node, isAnthropic]);
@@ -35,12 +37,20 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
 
   const handleSubmit = async () => {
     if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
+    let headers;
+    try {
+      headers = JSON.parse(formData.headers || "{}");
+    } catch {
+      setValidationResult({ valid: false, error: "Headers must be valid JSON" });
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
         name: formData.name,
         prefix: formData.prefix,
         baseUrl: formData.baseUrl,
+        headers,
       };
       if (!isAnthropic) {
         payload.apiType = formData.apiType;
@@ -52,6 +62,13 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
   };
 
   const handleValidate = async () => {
+    let headers;
+    try {
+      headers = JSON.parse(formData.headers || "{}");
+    } catch {
+      setValidationResult({ valid: false, error: "Headers must be valid JSON" });
+      return;
+    }
     setValidating(true);
     try {
       const res = await fetch("/api/provider-nodes/validate", {
@@ -60,14 +77,15 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
         body: JSON.stringify({
           baseUrl: formData.baseUrl,
           apiKey: checkKey,
+          headers,
           type: isAnthropic ? "anthropic-compatible" : "openai-compatible",
           modelId: checkModelId.trim() || undefined
         }),
       });
       const data = await res.json();
-      setValidationResult(data.valid ? "success" : "failed");
+      setValidationResult(data);
     } catch {
-      setValidationResult("failed");
+      setValidationResult({ valid: false, error: "Network error" });
     } finally {
       setValidating(false);
     }
@@ -107,6 +125,19 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
           placeholder={isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"}
           hint={`Use the base URL (ending in /v1) for your ${isAnthropic ? "Anthropic" : "OpenAI"}-compatible API.`}
         />
+        <label className="flex flex-col gap-1 text-sm">
+          <span>Custom request headers (JSON)</span>
+          <textarea
+            value={formData.headers}
+            onChange={(e) => setFormData({ ...formData, headers: e.target.value })}
+            rows={3}
+            className="rounded border border-border bg-background px-3 py-2 font-mono text-sm"
+            placeholder={'{"User-Agent":"undici"}'}
+          />
+          <span className="text-xs text-text-muted">
+            Environment variables such as {"${WORKBUDDY_USER_AGENT}"} must be listed in CUSTOM_HEADER_ENV_ALLOWLIST.
+          </span>
+        </label>
         <div className="flex gap-2">
           <Input
             label="API Key (for Check)"
@@ -129,9 +160,14 @@ export default function EditCompatibleNodeModal({ isOpen, node, onSave, onClose,
           hint="If provider lacks /models endpoint, enter a model ID to validate via chat/completions instead."
         />
         {validationResult && (
-          <Badge variant={validationResult === "success" ? "success" : "error"}>
-            {validationResult === "success" ? "Valid" : "Invalid"}
-          </Badge>
+          <div className="flex flex-col gap-1">
+            <Badge variant={validationResult.valid ? "success" : "error"}>
+              {validationResult.valid ? "Valid" : "Invalid"}
+            </Badge>
+            {validationResult.error && (
+              <span className="text-sm text-red-500">{validationResult.error}</span>
+            )}
+          </div>
         )}
         <div className="flex gap-2">
           <Button onClick={handleSubmit} fullWidth disabled={!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim() || saving}>
@@ -154,6 +190,7 @@ EditCompatibleNodeModal.propTypes = {
     prefix: PropTypes.string,
     apiType: PropTypes.string,
     baseUrl: PropTypes.string,
+    headers: PropTypes.object,
   }),
   onSave: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,

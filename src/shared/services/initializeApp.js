@@ -70,6 +70,11 @@ export async function initializeApp() {
       safeRestartTunnel("unexpected-exit").catch(() => {});
     });
 
+    // This scheduler protects expiring credits independently of dashboard traffic.
+    import("@/shared/services/codexResetCreditAutoUse")
+      .then(async ({ configureCodexResetCreditAutoUse }) => configureCodexResetCreditAutoUse(await getSettings()))
+      .catch((e) => console.warn("[Codex Reset Credits] scheduler start failed:", e.message));
+
     // Defer the heavy work — nothing here blocks incoming requests.
     setTimeout(() => {
       runHeavyStartup().catch((e) => console.error("[InitApp] deferred startup failed:", e.message));

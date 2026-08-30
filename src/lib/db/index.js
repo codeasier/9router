@@ -29,7 +29,7 @@ export {
 
 // API keys
 export {
-  getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey, getApiKeyByKey,
 } from "./repos/apiKeysRepo.js";
 
 // Combos
@@ -60,12 +60,20 @@ export {
   statsEmitter, trackPendingRequest, getActiveRequests,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs,
+  getUsageForApiKey, USAGE_QUERY_LIMITS,
 } from "./repos/usageRepo.js";
 
 // Request details
 export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
 } from "./repos/requestDetailsRepo.js";
+
+// Codex reset-credit irreversible attempt ledger
+export {
+  getActiveCodexResetCreditAttempt, getLatestCodexResetCreditAttempt,
+  createCodexResetCreditAttempt,
+  updateCodexResetCreditAttempt,
+} from "./repos/codexResetCreditAttemptsRepo.js";
 
 // Export/import full DB
 export async function exportDb() {
@@ -83,6 +91,10 @@ export async function exportDb() {
     customModels: [],
     mitmAlias: {},
     pricing: {},
+    codexResetCreditAttempts: db.all(`SELECT * FROM codexResetCreditAttempts`).map((r) => ({
+      ...r,
+      result: parseJson(r.result, null),
+    })),
   };
 
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
@@ -107,6 +119,8 @@ export async function importDb(payload) {
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
     db.run(`DELETE FROM combos`);
+    const hasAttemptLedger = Object.prototype.hasOwnProperty.call(payload, "codexResetCreditAttempts");
+    if (hasAttemptLedger) db.run(`DELETE FROM codexResetCreditAttempts`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
 
     // Settings
@@ -145,6 +159,20 @@ export async function importDb(payload) {
       db.run(
         `INSERT OR REPLACE INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
         [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const attempt of hasAttemptLedger ? payload.codexResetCreditAttempts || [] : []) {
+      db.run(
+        `INSERT OR REPLACE INTO codexResetCreditAttempts(
+          id, accountIdentity, connectionId, creditFingerprint, creditExpiresAt,
+          availableCountBefore, redeemRequestId, status, result, createdAt, updatedAt
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          attempt.id, attempt.accountIdentity, attempt.connectionId,
+          attempt.creditFingerprint, attempt.creditExpiresAt || null,
+          attempt.availableCountBefore, attempt.redeemRequestId, attempt.status,
+          stringifyJson(attempt.result ?? null), attempt.createdAt, attempt.updatedAt,
+        ],
       );
     }
     for (const [a, m] of Object.entries(payload.modelAliases || {})) {

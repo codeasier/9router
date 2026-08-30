@@ -15,6 +15,23 @@ export default {
     contents: [{ parts: [{ text: body.prompt }] }],
     generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
   }),
+  buildEditUrl: (model, creds) => {
+    const apiKey = creds?.apiKey || creds?.accessToken;
+    const modelId = model.replace(/^models\//, "");
+    return `${BASE_URL}/${modelId}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  },
+  buildEditBody: (_model, body) => {
+    const images = body.images || (body.image ? [body.image] : []);
+    if (images.length === 0) throw new Error("Missing required field: image");
+    const parts = images.map((img) => ({
+      inlineData: { mimeType: img.mime || "image/png", data: img.b64 },
+    }));
+    parts.push({ text: body.prompt });
+    return {
+      contents: [{ parts }],
+      generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+    };
+  },
   normalize: (responseBody, prompt) => {
     const parts = responseBody.candidates?.[0]?.content?.parts || [];
     const images = parts.filter((p) => p.inlineData?.data).map((p) => ({ b64_json: p.inlineData.data }));

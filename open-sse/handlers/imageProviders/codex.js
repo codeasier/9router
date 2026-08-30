@@ -159,9 +159,45 @@ function buildSseResponse(providerResponse, log, onSuccess) {
   });
 }
 
+// Build Codex Responses body with reference images (data URLs or remote URLs)
+function buildCodexBody(model, body) {
+  const refs = [];
+  if (Array.isArray(body.images)) body.images.forEach((i) => { const u = toDataUrl(i); if (u) refs.push(u); });
+  const single = toDataUrl(body.image);
+  if (single) refs.push(single);
+  const detail = body.image_detail || CODEX_REF_DETAIL;
+  const { responsesModel, toolModel } = resolveCodexImageModels(model);
+  const imgTool = { type: "image_generation", output_format: (body.output_format || "png").toLowerCase() };
+  if (toolModel) {
+    imgTool.action = refs.length > 0 ? "edit" : "generate";
+    imgTool.model = toolModel;
+  }
+  if (body.size && body.size !== "") imgTool.size = body.size;
+  if (body.quality && body.quality !== "") imgTool.quality = body.quality;
+  if (body.background && body.background !== "") imgTool.background = body.background;
+  return {
+    model: responsesModel,
+    instructions: "",
+    input: [{ type: "message", role: "user", content: buildContent(body.prompt, refs, detail) }],
+    tools: [imgTool],
+    tool_choice: toolModel ? { type: "image_generation" } : "auto",
+    parallel_tool_calls: false,
+    prompt_cache_key: randomUUID(),
+    stream: true,
+    store: false,
+    reasoning: toolModel ? { effort: "medium", summary: "auto" } : null,
+  };
+}
+
 export default {
   stream: true,
   buildUrl: () => CODEX_RESPONSES_URL,
+  buildEditUrl: () => CODEX_RESPONSES_URL,
+  buildEditBody: (model, body) => {
+    const images = body.images || (body.image ? [body.image] : []);
+    const refs = images.map((img) => (img?.b64 ? `data:${img.mime || "image/png"};base64,${img.b64}` : img));
+    return buildCodexBody(model, { ...body, images: refs });
+  },
   buildHeaders: (creds) => {
     const accountId = creds?.providerSpecificData?.chatgptAccountId || decodeAccountId(creds?.idToken);
     return {
@@ -176,34 +212,7 @@ export default {
       "x-client-request-id": randomUUID(),
     };
   },
-  buildBody: (model, body) => {
-    const refs = [];
-    if (Array.isArray(body.images)) body.images.forEach((i) => { const u = toDataUrl(i); if (u) refs.push(u); });
-    const single = toDataUrl(body.image);
-    if (single) refs.push(single);
-    const detail = body.image_detail || CODEX_REF_DETAIL;
-    const { responsesModel, toolModel } = resolveCodexImageModels(model);
-    const imgTool = { type: "image_generation", output_format: (body.output_format || "png").toLowerCase() };
-    if (toolModel) {
-      imgTool.action = refs.length > 0 ? "edit" : "generate";
-      imgTool.model = toolModel;
-    }
-    if (body.size && body.size !== "") imgTool.size = body.size;
-    if (body.quality && body.quality !== "") imgTool.quality = body.quality;
-    if (body.background && body.background !== "") imgTool.background = body.background;
-    return {
-      model: responsesModel,
-      instructions: "",
-      input: [{ type: "message", role: "user", content: buildContent(body.prompt, refs, detail) }],
-      tools: [imgTool],
-      tool_choice: toolModel ? { type: "image_generation" } : "auto",
-      parallel_tool_calls: false,
-      prompt_cache_key: randomUUID(),
-      stream: true,
-      store: false,
-      reasoning: toolModel ? { effort: "medium", summary: "auto" } : null,
-    };
-  },
+  buildBody: (model, body) => buildCodexBody(model, body),
   // Custom: codex parses SSE → either pipe to client or collect b64
   async parseResponse(response, { log, streamToClient, onRequestSuccess }) {
     if (streamToClient) {
