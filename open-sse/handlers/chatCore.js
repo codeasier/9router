@@ -80,7 +80,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (bypassResponse) return bypassResponse;
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
-  const { targetFormat, useTransport, thinkingIntent: forcedThinking } = resolveChatRouting({
+  const { targetFormat, useTransport, thinkingIntent: forcedThinking, override } = resolveChatRouting({
     provider,
     model,
     sourceFormat,
@@ -89,6 +89,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log,
   });
   if (useTransport && credentials) credentials.runtimeTransport = useTransport;
+  if (override?.protocol && useTransport) {
+    log?.info?.("OVERRIDE", `protocol ${override.protocol} → ${useTransport.baseUrl}`);
+  }
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
 
