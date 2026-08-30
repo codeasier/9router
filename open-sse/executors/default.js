@@ -11,6 +11,7 @@ import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { extractClaudeSessionIdFromUserId } from "../utils/claudeCloaking.js";
 import { wantsGeminiLongDecode, withGeminiLongDecode } from "../utils/geminiLongDecode.js";
+import { mergeCustomHeaders } from "../utils/customHeaders.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -218,7 +219,10 @@ export class DefaultExecutor extends BaseExecutor {
 
   buildHeaders(credentials, stream = true, url, model, body = null) {
     const rt = credentials?.runtimeTransport;
-    const headers = { "Content-Type": "application/json", ...(rt ? rt.headers : this.config.headers) };
+    const headers = mergeCustomHeaders(
+      { "Content-Type": "application/json", ...(rt ? rt.headers : this.config.headers) },
+      credentials?.providerSpecificData?.headers
+    );
     const desc = rt?.auth || AUTH_DESCRIPTORS[this.provider] || this.resolveAuthDescriptor();
     // Hooks run BEFORE auth so dynamic overlays can't clobber the token.
     for (const hook of desc.hooks || []) HEADER_HOOKS[hook]?.(headers, credentials);

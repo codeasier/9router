@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 const originalDataDir = process.env.DATA_DIR;
 
-async function setupTestContext(nodeData) {
+async function setupTestContext(nodeData = null) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "9router-compatible-provider-"));
   process.env.DATA_DIR = tempDir;
   vi.resetModules();
@@ -21,16 +21,18 @@ async function setupTestContext(nodeData) {
   }));
 
   const { POST } = await import("@/app/api/providers/route.js");
+  const { PUT } = await import("@/app/api/provider-nodes/[id]/route.js");
   const {
     createProviderNode,
     getProviderConnections,
   } = await import("@/models/index.js");
 
-  const node = await createProviderNode(nodeData);
+  const node = nodeData ? await createProviderNode(nodeData) : null;
 
   return {
     node,
     POST,
+    PUT,
     getProviderConnections,
     cleanup() {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -165,5 +167,71 @@ describe("compatible provider connections API", () => {
     expect(storedConnections).toHaveLength(2);
     expectCompatibleConnection(storedConnections[0], ctx.node, { apiType: "chat" });
     expectCompatibleConnection(storedConnections[1], ctx.node, { apiType: "chat" });
+  });
+
+  it("preserves omitted headers and clears explicit empty headers on existing connections", async () => {
+    const ctx = await setupTestContext({
+      id: "openai-compatible-headers-test",
+      type: "openai-compatible",
+      name: "Headers Node",
+      prefix: "hdr",
+      apiType: "chat",
+      baseUrl: "https://headers.test/v1",
+      headers: { "User-Agent": "undici" },
+    });
+    cleanup = ctx.cleanup;
+    await ctx.POST(makeRequest(ctx.node.id));
+
+    const updateNode = (body) => ctx.PUT(new Request(`https://9router.local/api/provider-nodes/${ctx.node.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }), { params: Promise.resolve({ id: ctx.node.id }) });
+
+    await updateNode({
+      name: "Renamed Headers Node",
+      prefix: "hdr",
+      apiType: "chat",
+      baseUrl: "https://headers.test/v1",
+    });
+    let [connection] = await ctx.getProviderConnections({ provider: ctx.node.id });
+    expect(connection.providerSpecificData.headers).toEqual({ "User-Agent": "undici" });
+
+    await updateNode({
+      name: "Renamed Headers Node",
+      prefix: "hdr",
+      apiType: "chat",
+      baseUrl: "https://headers.test/v1",
+      headers: {},
+    });
+    [connection] = await ctx.getProviderConnections({ provider: ctx.node.id });
+    expect(connection.providerSpecificData.headers).toEqual({});
+  });
+
+  it("persists a Step Plan API key through the generic provider connection API", async () => {
+    const ctx = await setupTestContext();
+    cleanup = ctx.cleanup;
+
+    const response = await ctx.POST(makeRequest("step-plan", "Step Plan Key"));
+    const body = await response.json();
+    const storedConnections = await ctx.getProviderConnections({ provider: "step-plan" });
+
+    expect(response.status).toBe(201);
+    expect(body.connection).not.toHaveProperty("apiKey");
+    expect(body.connection).toMatchObject({
+      provider: "step-plan",
+      authType: "apikey",
+      name: "Step Plan Key",
+      defaultModel: "test-model",
+    });
+    expect(storedConnections).toHaveLength(1);
+    expect(storedConnections[0]).toMatchObject({
+      provider: "step-plan",
+      authType: "apikey",
+      name: "Step Plan Key",
+      apiKey: "test-key",
+      defaultModel: "test-model",
+      isActive: true,
+    });
   });
 });
