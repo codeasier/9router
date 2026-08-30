@@ -11,6 +11,7 @@ describe("toOpenAIUsage", () => {
     expect(u.prompt_tokens).toBe(140);
     expect(u.completion_tokens).toBe(20);
     expect(u.total_tokens).toBe(160);
+    expect(u.cached_tokens).toBe(30);
     expect(u.prompt_tokens_details.cached_tokens).toBe(30);
     expect(u.prompt_tokens_details.cache_creation_tokens).toBe(10);
   });

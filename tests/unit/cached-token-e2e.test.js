@@ -81,4 +81,27 @@ describe("cached-token end-to-end (persist + aggregate + cost)", () => {
     expect(hist[0].tokens.prompt_tokens).toBe(1000);
     expect(hist[0].tokens.cached_tokens).toBe(600);
   });
+
+  it("OpenAI nested-only cache: persist prompt_tokens_details.cached_tokens", async () => {
+    const canonical = canonicalizeUsage({
+      prompt_tokens: 9701,
+      completion_tokens: 7,
+      total_tokens: 9708,
+      prompt_tokens_details: { cached_tokens: 8960 },
+    });
+    expect(canonical.cached_tokens).toBe(8960);
+
+    await db.saveRequestUsage({
+      provider: "codex",
+      model: "gpt-5.6-terra",
+      connectionId: "c-nested",
+      tokens: canonical,
+      endpoint: "/v1/chat/completions",
+      status: "ok",
+    });
+
+    const hist = await db.getUsageHistory({ provider: "codex" });
+    expect(hist[0].tokens.prompt_tokens).toBe(9701);
+    expect(hist[0].tokens.cached_tokens).toBe(8960);
+  });
 });
