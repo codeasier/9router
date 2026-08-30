@@ -27,6 +27,19 @@ describe("#3216 prompt_cache_key across the chat/responses translation", () => {
     expect(out.prompt_cache_key).toBeUndefined();
   });
 
+  it("maps chat max_tokens to Responses max_output_tokens", () => {
+    const out = openaiToOpenAIResponsesRequest(
+      "example-model",
+      CHAT_BODY({ max_tokens: 1024 }),
+      false,
+      {},
+    );
+
+    expect(out.max_output_tokens).toBe(1024);
+    expect(out.max_tokens).toBeUndefined();
+    expect(out.stream).toBe(false);
+  });
+
   it("still drops the key on the responses → chat direction", () => {
     const out = openaiResponsesToOpenAIRequest(
       "example-model",
