@@ -10,6 +10,7 @@ const authMocks = vi.hoisted(() => ({
 
 const settingsMocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
+  getApiKeyByKey: vi.fn(),
 }));
 
 const modelMocks = vi.hoisted(() => ({
@@ -46,6 +47,7 @@ vi.mock("@/sse/utils/logger.js", () => loggerMocks);
 vi.mock("open-sse/handlers/imageGenerationCore.js", () => coreMocks);
 
 import { handleImageGeneration } from "@/sse/handlers/imageGeneration.js";
+import { _resetKeyPolicyState } from "@/sse/services/keyPolicy.js";
 
 const stepPlanModel = "step-plan/step-image-edit-2";
 
@@ -67,7 +69,9 @@ function connection(connectionId = "step-connection-1") {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  _resetKeyPolicyState();
   settingsMocks.getSettings.mockResolvedValue({ requireApiKey: false });
+  settingsMocks.getApiKeyByKey.mockResolvedValue(null);
   authMocks.extractApiKey.mockReturnValue(null);
   authMocks.isValidApiKey.mockResolvedValue(true);
   authMocks.getProviderCredentials.mockResolvedValue(connection());
@@ -102,6 +106,21 @@ describe("handleImageGeneration", () => {
     expect(await response.text()).toContain("Invalid API key");
     expect(authMocks.isValidApiKey).toHaveBeenCalledWith("invalid-local-key");
     expect(authMocks.getProviderCredentials).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before an unpriced image attempt when its provider budget matches", async () => {
+    authMocks.extractApiKey.mockReturnValue("budgeted-client-key");
+    settingsMocks.getApiKeyByKey.mockResolvedValue({
+      policy: { budgets: [{ provider: "step-plan", limitUsd: 5, period: "day" }] },
+    });
+
+    const response = await handleImageGeneration(makeRequest({ model: stepPlanModel, prompt: "sunrise" }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(payload.error.code).toBe("policy_violation");
+    expect(authMocks.getProviderCredentials).not.toHaveBeenCalled();
+    expect(coreMocks.handleImageGenerationCore).not.toHaveBeenCalled();
   });
 
   it("passes the preferred Step Plan connection to credential selection", async () => {
