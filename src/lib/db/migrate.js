@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { LEGACY_FILES, DB_DIR } from "./paths.js";
-import { TABLES, buildCreateTableSql, SCHEMA_VERSION } from "./schema.js";
+import { TABLES, buildCreateTableSql, SCHEMA_VERSION, FORK_SCHEMA_VERSION } from "./schema.js";
 import { MIGRATIONS, latestVersion } from "./migrations/index.js";
+import { FORK_MIGRATIONS, latestForkVersion } from "./forkMigrations/index.js";
 import { getMetaSync, setMetaSync } from "./helpers/metaStore.js";
 import { makeBackupDir, backupFile, backupDbLite, pruneOldBackups } from "./backup.js";
 import { getAppVersion } from "./version.js";
@@ -10,6 +11,8 @@ import { stringifyJson } from "./helpers/jsonCol.js";
 
 // Marker file: prevents re-importing legacy JSON when user wipes data.sqlite.
 const MIGRATED_MARKER = path.join(DB_DIR, ".migrated-from-json");
+const LEGACY_FORK_OFFICIAL_VERSION = 1;
+const LEGACY_FORK_MIGRATION_VERSION = 1;
 
 // Track per-adapter so reusing same adapter skips re-run, but new adapter (after reset) re-runs.
 const _migratedAdapters = new WeakSet();
@@ -53,26 +56,85 @@ function isFreshDb(adapter) {
   }
 }
 
-// ─── Versioned migrations runner (skip-version safe) ─────────────────────
-function runVersionedMigrations(adapter) {
-  // Bootstrap _meta first so we can read schemaVersion
+// Versioned runner is injectable so official and fork registries cannot collide.
+export function runVersionedMigrations(adapter, {
+  migrations = MIGRATIONS,
+  metaKey = "schemaVersion",
+  label = "official",
+} = {}) {
   adapter.exec(buildCreateTableSql("_meta", TABLES._meta));
 
-  const current = parseInt(getMetaSync(adapter, "schemaVersion", "0"), 10) || 0;
-  const target = latestVersion();
-  if (current >= target) return { applied: 0, from: current, to: current };
+  const current = parseInt(getMetaSync(adapter, metaKey, "0"), 10) || 0;
+  const target = migrations.length ? migrations[migrations.length - 1].version : 0;
+  if (current > target) {
+    throw new Error(`[DB][migrate] ${label} ${metaKey} ${current} is newer than supported ${target}`);
+  }
+  if (current === target) return { applied: 0, from: current, to: current };
 
-  const pending = MIGRATIONS.filter((m) => m.version > current);
+  const pending = migrations.filter((m) => m.version > current);
   let lastApplied = current;
   for (const m of pending) {
     adapter.transaction(() => {
       m.up(adapter);
-      setMetaSync(adapter, "schemaVersion", m.version);
+      setMetaSync(adapter, metaKey, m.version);
     });
     lastApplied = m.version;
-    console.log(`[DB][migrate] applied #${m.version} ${m.name}`);
+    console.log(`[DB][migrate] applied ${label} #${m.version} ${m.name}`);
   }
   return { applied: pending.length, from: current, to: lastApplied };
+}
+
+function sqliteObjectExists(adapter, type, name, tableName = null) {
+  const tableClause = tableName ? " AND tbl_name = ?" : "";
+  const params = tableName ? [type, name, tableName] : [type, name];
+  return !!adapter.get(
+    `SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?${tableClause}`,
+    params,
+  );
+}
+
+// Split metadata written by pre-R5 fork builds only when the full physical
+// fingerprint is present. A coincidental future official version 2 stays closed.
+export function normalizeLegacyForkMetadata(adapter) {
+  // Split-namespace metadata is authoritative once present. Never downgrade a
+  // database from a newer fork back to the legacy bridge values.
+  if (
+    getMetaSync(adapter, "forkSchemaVersion", null) !== null
+    || getMetaSync(adapter, "forkBackupSchemaVersion", null) !== null
+  ) {
+    return false;
+  }
+  const officialVersion = parseInt(getMetaSync(adapter, "schemaVersion", "0"), 10) || 0;
+  const mixedBackupVersion = parseInt(getMetaSync(adapter, "backupSchemaVersion", "0"), 10) || 0;
+  const hasForkFingerprint = officialVersion === 2
+    && (mixedBackupVersion === 3 || mixedBackupVersion === 4)
+    && sqliteObjectExists(adapter, "table", "codexResetCreditAttempts")
+    && sqliteObjectExists(adapter, "index", "idx_uh_apiKey_ts", "usageHistory");
+  if (!hasForkFingerprint) return false;
+
+  const hasPolicy = adapter.all(`PRAGMA table_info(apiKeys)`).some((column) => column.name === "policy");
+  const physicalForkVersion = mixedBackupVersion === 4 && hasPolicy ? 4 : 3;
+  adapter.transaction(() => {
+    // Keep these historical values fixed so a future official #2 still runs.
+    setMetaSync(adapter, "schemaVersion", LEGACY_FORK_OFFICIAL_VERSION);
+    setMetaSync(adapter, "forkSchemaVersion", LEGACY_FORK_MIGRATION_VERSION);
+    setMetaSync(adapter, "backupSchemaVersion", LEGACY_FORK_OFFICIAL_VERSION);
+    setMetaSync(adapter, "forkBackupSchemaVersion", physicalForkVersion);
+  });
+  console.log(`[DB][migrate] split legacy fork metadata at physical fork schema ${physicalForkVersion}`);
+  return true;
+}
+
+function readVersion(adapter, key) {
+  return parseInt(getMetaSync(adapter, key, "0"), 10) || 0;
+}
+
+function assertVersionNotAhead(adapter, key, target, label) {
+  const current = readVersion(adapter, key);
+  if (current > target) {
+    throw new Error(`[DB][migrate] ${label} ${key} ${current} is newer than supported ${target}`);
+  }
+  return current;
 }
 
 // ─── Auto-sync (additive only): add missing tables/columns/indexes ───────
@@ -228,29 +290,54 @@ export async function runMigrationOnce(adapter) {
   // (runVersionedMigrations also ensures this, but we need it earlier here).
   adapter.exec(buildCreateTableSql("_meta", TABLES._meta));
 
-  // Detect a pending schema change via the central SCHEMA_VERSION const.
-  // A lightweight backup is taken BEFORE any schema mutation below.
-  const storedSchemaVer = parseInt(getMetaSync(adapter, "backupSchemaVersion", "0"), 10) || 0;
-  const schemaChanging = !fresh && storedSchemaVer < SCHEMA_VERSION;
+  normalizeLegacyForkMetadata(adapter);
+
+  // Reject unknown official versions before backup, migrations, or additive sync.
+  const officialMigrationVersion = assertVersionNotAhead(
+    adapter, "schemaVersion", latestVersion(), "official",
+  );
+  const forkMigrationVersion = assertVersionNotAhead(
+    adapter, "forkSchemaVersion", latestForkVersion(), "fork",
+  );
+  const officialBackupVersion = assertVersionNotAhead(
+    adapter, "backupSchemaVersion", SCHEMA_VERSION, "official",
+  );
+  const forkBackupVersion = assertVersionNotAhead(
+    adapter, "forkBackupSchemaVersion", FORK_SCHEMA_VERSION, "fork",
+  );
+  const schemaChanging = !fresh && (
+    officialMigrationVersion < latestVersion()
+    || forkMigrationVersion < latestForkVersion()
+    || officialBackupVersion < SCHEMA_VERSION
+    || forkBackupVersion < FORK_SCHEMA_VERSION
+  );
   if (schemaChanging) {
     try {
-      const backupDir = makeBackupDir(`schema-${storedSchemaVer}-to-${SCHEMA_VERSION}`);
+      const backupDir = makeBackupDir(
+        `schema-${officialBackupVersion}-to-${SCHEMA_VERSION}-fork-${forkBackupVersion}-to-${FORK_SCHEMA_VERSION}`,
+      );
       backupDbLite(adapter, backupDir);
       pruneOldBackups();
-      console.log(`[DB][migrate] pre-schema backup ${storedSchemaVer} → ${SCHEMA_VERSION}: ${backupDir}`);
+      console.log(`[DB][migrate] pre-schema backup: ${backupDir}`);
     } catch (e) {
       console.warn(`[DB][migrate] pre-schema backup failed (continuing): ${e.message}`);
     }
   }
 
-  // 1. Always run versioned migrations chain (skip-version safe)
-  const migInfo = runVersionedMigrations(adapter);
+  // 1. Run independent official and fork migration chains.
+  runVersionedMigrations(adapter);
+  runVersionedMigrations(adapter, {
+    migrations: FORK_MIGRATIONS,
+    metaKey: "forkSchemaVersion",
+    label: "fork",
+  });
 
   // 2. Additive sync (auto add missing columns/indexes declared in TABLES)
   syncSchemaFromTables(adapter);
 
-  // Stamp the schema version we just reached so future boots skip re-backup.
+  // Stamp each declarative schema independently so future boots skip re-backup.
   setMetaSync(adapter, "backupSchemaVersion", SCHEMA_VERSION);
+  setMetaSync(adapter, "forkBackupSchemaVersion", FORK_SCHEMA_VERSION);
 
   // 3. One-time legacy JSON import (only if DB was fresh on entry)
   const alreadyImported = fs.existsSync(MIGRATED_MARKER);
@@ -273,6 +360,7 @@ export async function runMigrationOnce(adapter) {
         importLegacyDetails(adapter, legacyDetails);
         setMetaSync(adapter, "appVersion", getAppVersion());
         setMetaSync(adapter, "backupSchemaVersion", SCHEMA_VERSION);
+        setMetaSync(adapter, "forkBackupSchemaVersion", FORK_SCHEMA_VERSION);
         setMetaSync(adapter, "migratedAt", new Date().toISOString());
       });
     } catch (err) {
@@ -290,7 +378,7 @@ export async function runMigrationOnce(adapter) {
   }
 
   // Track app version for informational purposes only. App version bumps no
-  // longer trigger a DB backup — only real schema changes (SCHEMA_VERSION) do.
+  // longer trigger a DB backup; only official or fork schema changes do.
   const newVer = getAppVersion();
   const oldVer = getMetaSync(adapter, "appVersion", null);
   if (oldVer !== newVer) setMetaSync(adapter, "appVersion", newVer);
