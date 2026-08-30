@@ -107,7 +107,7 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
     "px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-sm text-text-main focus:outline-none focus:ring-1 focus:ring-primary";
 
   return (
-    <Modal isOpen={isOpen} title={`${translate("Policy")} — ${apiKeyRecord.name || "API Key"}`} onClose={onClose}>
+    <Modal isOpen={isOpen} size="xl" title={`${translate("Policy")} — ${apiKeyRecord.name || "API Key"}`} onClose={onClose}>
       <div className="flex flex-col gap-5 max-h-[70vh] overflow-y-auto">
         {/* Live status */}
         {status && (
@@ -191,15 +191,15 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
             <p className="text-xs text-text-muted">No budgets — unlimited spend. Example: provider "codex", $5 per day.</p>
           )}
           {budgets.map((b, i) => (
-            <div key={i} className="flex items-center gap-2 mb-2">
+            <div key={i} className="grid grid-cols-[minmax(180px,1fr)_110px_130px_36px] gap-2 items-center mb-2">
               {(() => {
                 const known = b.provider === "*" || PROVIDER_OPTIONS.some((p) => p.id === b.provider);
                 return (
-                  <div className="flex-1 flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
                     <select
                       value={known ? (b.provider || "*") : "custom"}
                       onChange={(e) => updateBudget(i, "provider", e.target.value === "custom" ? "" : e.target.value)}
-                      className={selectClass + " flex-1"}
+                      className={selectClass + " flex-1 min-w-0"}
                     >
                       <option value="*">{translate("All providers")} (*)</option>
                       {PROVIDER_OPTIONS.map((p) => (
@@ -212,7 +212,7 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
                         value={b.provider}
                         onChange={(e) => updateBudget(i, "provider", e.target.value)}
                         placeholder={translate("provider id")}
-                        className="flex-1"
+                        className="flex-1 min-w-[120px]"
                       />
                     )}
                   </div>
@@ -225,12 +225,12 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
                 type="number"
                 min="0"
                 step="0.5"
-                className="w-24 shrink-0"
+                className="w-full"
               />
               <select
                 value={b.period}
                 onChange={(e) => updateBudget(i, "period", e.target.value)}
-                className={selectClass + " w-28 shrink-0"}
+                className={selectClass + " w-full"}
               >
                 <option value="day">{translate("daily")}</option>
                 <option value="week">{translate("weekly")}</option>
@@ -238,7 +238,7 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
               </select>
               <button
                 onClick={() => removeBudget(i)}
-                className="p-2 hover:bg-red-500/10 rounded text-red-500 shrink-0"
+                className="p-2 hover:bg-red-500/10 rounded text-red-500 justify-self-center"
                 title={translate("Remove budget")}
               >
                 <span className="material-symbols-outlined text-[18px]">delete</span>
@@ -247,31 +247,17 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
           ))}
         </div>
 
-        {/* Concurrency */}
-        <div>
-          <p className="text-sm font-medium mb-1">Max Concurrent Requests</p>
-          <p className="text-xs text-text-muted mb-2">Fast-fail with 429 when this key has more requests in flight.</p>
-          <Input
-            value={maxConcurrent}
-            onChange={(e) => setMaxConcurrent(e.target.value)}
-            placeholder={translate("unlimited")}
-            type="number"
-            min="1"
-            className="w-32"
-          />
-        </div>
-
-        {/* Breaker */}
+        {/* Breaker — directly follows Budgets (both are budget policy) */}
         <div>
           <p className="text-sm font-medium mb-1">Circuit Breaker Recovery</p>
           <p className="text-xs text-text-muted mb-2">Applied when a budget is exceeded.</p>
-          <div className="flex items-center gap-3">
-            <select value={breakerMode} onChange={(e) => setBreakerMode(e.target.value)} className={selectClass + " w-56"}>
+          <div className="flex flex-wrap items-center gap-3">
+            <select value={breakerMode} onChange={(e) => setBreakerMode(e.target.value)} className={selectClass + " min-w-[280px] flex-1 max-w-[360px]"}>
               <option value="fixed">{translate("Fixed duration (re-check after cooldown)")}</option>
               <option value="period">{translate("Until period ends (day/week/month rollover)")}</option>
             </select>
             {breakerMode === "fixed" && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <Input
                   value={breakerMinutes}
                   onChange={(e) => setBreakerMinutes(e.target.value)}
@@ -284,6 +270,20 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
               </div>
             )}
           </div>
+        </div>
+
+        {/* Concurrency — independent from budget/breaker, placed after */}
+        <div className="pt-3 border-t border-border/50">
+          <p className="text-sm font-medium mb-1">Max Concurrent Requests</p>
+          <p className="text-xs text-text-muted mb-2">Fast-fail with 429 when this key has more requests in flight.</p>
+          <Input
+            value={maxConcurrent}
+            onChange={(e) => setMaxConcurrent(e.target.value)}
+            placeholder={translate("unlimited")}
+            type="number"
+            min="1"
+            className="w-32"
+          />
         </div>
 
         {error && <p className="text-sm text-red-500">{error}</p>}
