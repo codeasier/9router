@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
 import { validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
+import { normalizePolicy, invalidateKeyPolicy } from "@/sse/services/keyPolicy.js";
 
 // GET /api/keys/[id] - Get single key
 export async function GET(request, { params }) {
@@ -17,12 +18,12 @@ export async function GET(request, { params }) {
   }
 }
 
-// PUT /api/keys/[id] - Update key
+// PUT /api/keys/[id] - Update key (isActive and/or policy)
 export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive, access } = body;
+    const { isActive, access, policy } = body;
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -36,8 +37,19 @@ export async function PUT(request, { params }) {
       if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
       updateData.access = checked.value;
     }
+    if (policy !== undefined) {
+      // null clears the policy; invalid shapes normalize to null (no limits)
+      const normalized = normalizePolicy(policy);
+      if (policy !== null && !normalized && (policy?.budgets?.length || policy?.maxConcurrent || policy?.breaker)) {
+        return NextResponse.json({ error: "Invalid policy: no valid budgets/maxConcurrent entries found" }, { status: 400 });
+      }
+      updateData.policy = normalized;
+    }
 
     const updated = await updateApiKey(id, updateData);
+    if (policy !== undefined && updated?.key) {
+      invalidateKeyPolicy(updated.key);
+    }
 
     return NextResponse.json({ key: updated });
   } catch (error) {
