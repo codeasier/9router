@@ -191,6 +191,30 @@ export function invalidateKeyPolicy(apiKeyValue) {
   state.policyCache.delete(apiKeyValue);
 }
 
+// Clear breaker state for a key (whole-key + per-provider). Used for manual
+// reset after a quota has been hit, and automatically when a policy limit is
+// raised so the new limit takes effect without waiting for the cooldown.
+export function clearKeyBreaker(apiKeyValue) {
+  if (!apiKeyValue) return;
+  state.breaker.delete(apiKeyValue);
+  for (const k of state.pb.keys()) {
+    if (k.startsWith(`${apiKeyValue}|`)) state.pb.delete(k);
+  }
+}
+
+// Full reset for a key: breaker + budget/policy caches. Spend itself stays
+// in usageHistory (recomputed from DB on next check), but the breaker cooldown
+// is cleared so a raised limit takes effect immediately.
+export function resetKeyPolicyState(apiKeyValue) {
+  if (!apiKeyValue) return;
+  clearKeyBreaker(apiKeyValue);
+  for (const k of state.budgetCache.keys()) {
+    if (k.startsWith(`${apiKeyValue}|`)) state.budgetCache.delete(k);
+  }
+  state.policyCache.delete(apiKeyValue);
+  log.warn("KEYPOLICY", `reset state for ${apiKeyValue.slice(0, 8)}…`);
+}
+
 // ─── Checks ──────────────────────────────────────────────────────────────
 
 /**
