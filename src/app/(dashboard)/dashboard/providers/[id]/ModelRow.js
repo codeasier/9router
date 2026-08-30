@@ -1,7 +1,10 @@
 import PropTypes from "prop-types";
 import { CapacityBadges } from "@/shared/components";
+import { translate } from "@/i18n/runtime";
 
-export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix }) {
+const SELECT_CLASS = "rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] focus:border-primary focus:outline-none";
+
+export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, thinkingValue, thinkingOptions, onThinkingChange, protocolValue, protocolOptions, onProtocolChange }) {
   const displayModel = thinkingSuffix ? `${fullModel}(${thinkingSuffix})` : fullModel;
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
@@ -30,6 +33,34 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
             {model.name && <span className="truncate text-[9px] italic text-text-muted/70">{model.name}</span>}
             <CapacityBadges caps={caps} colorOverride="text-text-muted/70" size={12} />
           </span>
+          {(thinkingOptions?.length || protocolOptions?.length > 1) ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-1 pl-1">
+              {thinkingOptions?.length ? (
+                <select
+                  value={thinkingValue || "auto"}
+                  onChange={(e) => onThinkingChange?.(e.target.value)}
+                  title={translate("Gateway thinking override")}
+                  className={SELECT_CLASS}
+                >
+                  {thinkingOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              ) : null}
+              {protocolOptions?.length > 1 ? (
+                <select
+                  value={protocolValue || "auto"}
+                  onChange={(e) => onProtocolChange?.(e.target.value)}
+                  title={translate("Gateway protocol override")}
+                  className={SELECT_CLASS}
+                >
+                  {protocolOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {onTest && (
           <div className="relative shrink-0 group/btn">
@@ -99,4 +130,16 @@ ModelRow.propTypes = {
   onDisable: PropTypes.func,
   caps: PropTypes.object,
   thinkingSuffix: PropTypes.string,
+  thinkingValue: PropTypes.string,
+  thinkingOptions: PropTypes.arrayOf(PropTypes.shape({
+    value: PropTypes.string.isRequired,
+    label: PropTypes.string.isRequired,
+  })),
+  onThinkingChange: PropTypes.func,
+  protocolValue: PropTypes.string,
+  protocolOptions: PropTypes.arrayOf(PropTypes.shape({
+    value: PropTypes.string.isRequired,
+    label: PropTypes.string.isRequired,
+  })),
+  onProtocolChange: PropTypes.func,
 };
