@@ -26,6 +26,12 @@ export async function urlToBase64(url) {
   return Buffer.from(buf).toString("base64");
 }
 
+// Derive the edits endpoint from a generations base URL
+// (https://…/v1/images/generations → https://…/v1/images/edits)
+export function editsUrlFrom(baseUrl) {
+  return baseUrl ? baseUrl.replace(/\/images\/generations$/, "/images/edits") : null;
+}
+
 export function nowSec() {
   return Math.floor(Date.now() / 1000);
 }
