@@ -68,6 +68,34 @@ describe("canonicalizeUsage", () => {
     expect(out.cache_creation_input_tokens).toBe(0);
   });
 
+  it("reads nested prompt_tokens_details.cached_tokens when top-level is absent", () => {
+    // Chat→Responses buildUsage() shape (chat T2 requestDetails.tokens): cache
+    // lives only on the nested OpenAI field. Persistence must not drop it to 0.
+    const out = canonicalizeUsage({
+      prompt_tokens: 9701,
+      completion_tokens: 7,
+      total_tokens: 9708,
+      prompt_tokens_details: { cached_tokens: 8960 },
+    });
+    expect(out.prompt_tokens).toBe(9701);
+    expect(out.completion_tokens).toBe(7);
+    expect(out.cached_tokens).toBe(8960);
+    expect(out.cache_creation_input_tokens).toBe(0);
+  });
+
+  it("canonicalizes buildUsage() output into top-level cached_tokens", () => {
+    const built = buildUsage({
+      promptTokens: 9701,
+      completionTokens: 7,
+      totalTokens: 9708,
+      cachedTokens: 8960,
+    });
+    expect(built.prompt_tokens_details.cached_tokens).toBe(8960);
+    const out = canonicalizeUsage(built);
+    expect(out.prompt_tokens).toBe(9701);
+    expect(out.cached_tokens).toBe(8960);
+  });
+
   it("is idempotent (running twice yields the same canonical shape)", () => {
     const once = canonicalizeUsage({
       prompt_tokens: 100,
@@ -194,6 +222,7 @@ describe("Kiro usage pass-through", () => {
       "kiro"
     );
     expect(out.prompt_tokens_details).toBeDefined();
+    expect(out.cached_tokens).toBe(200);
     expect(out.prompt_tokens_details.cached_tokens).toBe(200);
     expect(out.prompt_tokens_details.cache_creation_tokens).toBe(50);
   });

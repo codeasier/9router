@@ -138,12 +138,31 @@ describe("resolveSessionId", () => {
     expect(got).toBe("user-123");
   });
 
-  it("keeps x-client-request-id as a session override outside Kiro scope", () => {
-    const got = resolveSessionId({
+  it("does not treat request-scoped x-client-request-id as a Codex session override", () => {
+    const first = resolveSessionId({
       headers: { "x-client-request-id": "req-1" },
       body: bodyWithAssistant,
       connectionId: "conn1",
       scope: "codex",
+    });
+    const second = resolveSessionId({
+      headers: { "x-client-request-id": "req-2" },
+      body: bodyWithAssistant,
+      connectionId: "conn1",
+      scope: "codex",
+    });
+
+    expect(first).not.toBe("req-1");
+    expect(second).not.toBe("req-2");
+    expect(first).toBe(second);
+  });
+
+  it("keeps x-client-request-id as a session override outside Kiro and Codex", () => {
+    const got = resolveSessionId({
+      headers: { "x-client-request-id": "req-1" },
+      body: bodyWithAssistant,
+      connectionId: "conn1",
+      scope: "openai",
     });
 
     expect(got).toBe("req-1");
