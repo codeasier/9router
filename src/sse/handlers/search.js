@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   getProviderCredentials,
   markAccountUnavailable,
@@ -14,7 +15,8 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
 import { getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAccess.js";
-import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { saveRequestUsage } from "@/lib/usageDb.js";
+import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
 
 /**
  * Handle web search request for the SSE/Next.js server.
@@ -35,6 +37,7 @@ export async function handleSearch(request) {
   // Accept either `provider` or `model` (UI sends `model` since provider IS the model for webSearch)
   const providerInput = body.provider || body.model;
   const query = body.query;
+  const requestId = randomUUID();
 
   log.request("POST", `${url.pathname} | ${providerInput}`);
 
@@ -90,7 +93,7 @@ export async function handleSearch(request) {
     return policyGuard.wrap(await handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, request, apiKey, settings),
+      handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, apiKey, url.pathname, requestId),
       log,
       comboName: providerInput,
       comboStrategy,
@@ -98,10 +101,10 @@ export async function handleSearch(request) {
     }));
   }
 
-  return policyGuard.wrap(await handleSingleProviderSearch(body, providerInput, request, apiKey, settings));
+  return policyGuard.wrap(await handleSingleProviderSearch(body, providerInput, apiKey, url.pathname, requestId));
 }
 
-async function handleSingleProviderSearch(body, providerInput, request, apiKey, settings) {
+async function handleSingleProviderSearch(body, providerInput, apiKey, endpoint, requestId) {
   const query = body.query;
   const providerId = resolveProviderId(providerInput);
   const resolvedProvider = AI_PROVIDERS[providerId];
@@ -111,10 +114,6 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Unknown provider: ${providerInput}`);
   }
 
-  // Per-attempt provider budget check
-  const budgetReject = await checkProviderBudgetResponse(apiKey, providerId);
-  if (budgetReject) return budgetReject;
-
   const providerConfig = resolvedProvider.searchConfig;
   const supportsSearch = !!providerConfig || !!resolvedProvider.searchViaChat;
 
@@ -123,6 +122,14 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Provider ${providerId} does not support web search`);
   }
 
+  const costUsd = Number.isFinite(providerConfig?.costPerQuery) && providerConfig.costPerQuery >= 0
+    ? providerConfig.costPerQuery
+    : null;
+  const budgetPolicy = await evaluateProviderBudget(apiKey, providerId, { costUsd, operation: "web search" });
+  if (budgetPolicy.rejectionResponse) return budgetPolicy.rejectionResponse;
+  let releaseReservation = true;
+
+  try {
   if (providerInput !== providerId) {
     log.info("ROUTING", `${providerInput} → ${providerId}`);
   } else {
@@ -152,9 +159,28 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       provider: resolvedProvider,
       providerConfig,
       credentials: null,
-      log
+      log,
+      allowChatFallback: !budgetPolicy.budgetMatched,
     });
-    if (result.success) return result.response;
+    if (result.success) {
+      const actualCostUsd = result.data?.usage?.search_cost_usd;
+      if (providerConfig && Number.isFinite(actualCostUsd) && actualCostUsd >= 0) {
+        const usageSaved = await saveRequestUsage({
+          provider: result.data?.provider || providerId,
+          model: "search",
+          connectionId: null,
+          apiKey,
+          endpoint,
+          tokens: {},
+          costUsd: actualCostUsd,
+          requestId,
+          timestamp: budgetPolicy.accountingTimestamp || undefined,
+          status: "success",
+        });
+        if (budgetPolicy.budgetMatched && usageSaved === false) releaseReservation = false;
+      }
+      return result.response;
+    }
     return result.response;
   }
 
@@ -216,6 +242,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       providerConfig,
       credentials: refreshedCredentials,
       log,
+      allowChatFallback: !budgetPolicy.budgetMatched,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           accessToken: newCreds.accessToken,
@@ -229,7 +256,25 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       }
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      const actualCostUsd = result.data?.usage?.search_cost_usd;
+      if (providerConfig && Number.isFinite(actualCostUsd) && actualCostUsd >= 0) {
+        const usageSaved = await saveRequestUsage({
+          provider: result.data?.provider || providerId,
+          model: "search",
+          connectionId: credentials.connectionId,
+          apiKey,
+          endpoint,
+          tokens: {},
+          costUsd: actualCostUsd,
+          requestId,
+          timestamp: budgetPolicy.accountingTimestamp || undefined,
+          status: "success",
+        });
+        if (budgetPolicy.budgetMatched && usageSaved === false) releaseReservation = false;
+      }
+      return result.response;
+    }
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, credentialProviderId, searchLockKey);
 
@@ -242,5 +287,8 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
     }
 
     return result.response;
+  }
+  } finally {
+    if (releaseReservation) budgetPolicy.releaseReservation();
   }
 }
