@@ -10,7 +10,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
-import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
 
 // Derived from providers.js: any TTS provider not noAuth requires stored credentials
 const CREDENTIALED_PROVIDERS = new Set(
@@ -77,9 +77,8 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
   const { provider, model } = modelInfo;
   log.info("ROUTING", `Provider: ${provider}, Voice: ${model}`);
 
-  // Per-attempt provider budget check
-  const budgetReject = await checkProviderBudgetResponse(apiKey, provider);
-  if (budgetReject) return budgetReject;
+  const budgetPolicy = await evaluateProviderBudget(apiKey, provider, { operation: "text-to-speech" });
+  if (budgetPolicy.rejectionResponse) return budgetPolicy.rejectionResponse;
 
   // noAuth providers — no credential needed
   if (!CREDENTIALED_PROVIDERS.has(provider)) {
