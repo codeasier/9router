@@ -18,6 +18,7 @@ import geminiWeb from "./gemini-web.js";
 import grokWeb from "./grok-web.js";
 import veoAiFreeWeb from "./veoaifree-web.js";
 import ucWeb from "./uc-web.js";
+import stepPlan from "./stepPlan.js";
 
 const ADAPTERS = {
   openai: createOpenAIAdapter("openai"),
@@ -46,6 +47,7 @@ const ADAPTERS = {
   "grok-web": grokWeb,
   "veoaifree-web": veoAiFreeWeb,
   "uc-web": ucWeb,
+  "step-plan": stepPlan,
 };
 
 export function getImageAdapter(provider) {
