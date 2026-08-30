@@ -78,6 +78,27 @@ describe("non-stream Chat upstream for a Responses-API client (op-ericding bug)"
     expect(msg.content[0].text).toBe("hello");
   });
 
+  it("translates a Responses JSON body back to chat.completion for a chat client", () => {
+    const body = {
+      id: "resp_abc123",
+      object: "response",
+      created_at: 1700000000,
+      model: "muse-spark-1.2-contributor",
+      status: "completed",
+      output: [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "think" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "hello from responses" }] },
+      ],
+      usage: { input_tokens: 8, output_tokens: 275, total_tokens: 283 },
+    };
+    const out = translateNonStreamingResponse(body, FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI);
+    expect(out.object).toBe("chat.completion");
+    expect(out.choices[0].message.content).toBe("hello from responses");
+    expect(out.choices[0].message.reasoning_content).toBe("think");
+    expect(out.choices[0].finish_reason).toBe("stop");
+    expect(out.usage).toEqual({ prompt_tokens: 8, completion_tokens: 275, total_tokens: 283 });
+  });
+
   it("leaves chat->chat untouched", () => {
     const out = translateNonStreamingResponse(CHAT_TOOL_BODY, FORMATS.OPENAI, FORMATS.OPENAI);
     expect(out.object).toBe("chat.completion");

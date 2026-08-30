@@ -3,6 +3,7 @@ import { FORMATS } from "../../open-sse/translator/formats.js";
 import { modelThinking } from "../../open-sse/providers/models/schema.js";
 import { getModelSupportedFormats, getModelThinking } from "../../open-sse/config/providerModels.js";
 import {
+  applyModelOverridePatch,
   buildForcedTransport,
   normalizeProtocol,
   overrideLookupKeys,
@@ -20,6 +21,26 @@ describe("schema modelThinking", () => {
   it("defaults to null when undeclared", () => {
     expect(modelThinking({ id: "gpt-4o" })).toBeNull();
     expect(getModelThinking("opencode-go", "deepseek-v4-flash")).toBeNull();
+  });
+});
+
+describe("applyModelOverridePatch", () => {
+  it("computes a persistable map without relying on React setState", () => {
+    const next = applyModelOverridePatch({}, "opencode-go/muse-spark-1.2-contributor", {
+      protocol: "openai-responses",
+    });
+    expect(next).toEqual({
+      "opencode-go/muse-spark-1.2-contributor": { protocol: "openai-responses" },
+    });
+  });
+
+  it("drops auto values and empty entries", () => {
+    const next = applyModelOverridePatch(
+      { "opencode-go/muse-spark-1.2-contributor": { protocol: "openai-responses", thinking: "high" } },
+      "opencode-go/muse-spark-1.2-contributor",
+      { protocol: "auto", thinking: "auto" },
+    );
+    expect(next).toEqual({});
   });
 });
 
@@ -85,6 +106,21 @@ describe("resolveChatRouting protocol force", () => {
     });
     expect(routing.targetFormat).toBe(FORMATS.CLAUDE);
     expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/messages");
+  });
+
+  it("forces responses on an undeclared custom model even when the client sent chat", () => {
+    const routing = resolveChatRouting({
+      provider: "opencode-go",
+      model: "muse-spark-1.2-contributor",
+      sourceFormat: FORMATS.OPENAI,
+      settings: {
+        modelOverrides: {
+          "opencode-go/muse-spark-1.2-contributor": { protocol: "openai-responses" },
+        },
+      },
+    });
+    expect(routing.targetFormat).toBe(FORMATS.OPENAI_RESPONSES);
+    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
   });
 
   it("forces chat transport even when the client sent messages", () => {
