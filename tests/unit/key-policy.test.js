@@ -216,7 +216,131 @@ describe("checkBudget matching", () => {
   });
 });
 
+describe("evaluateProviderBudget", () => {
+  it("fails closed for an unpriced attempt only when a budget matches", async () => {
+    mockKeyRecord = {
+      policy: { budgets: [{ provider: "codex", limitUsd: 5, period: "day" }] },
+    };
+
+    const matched = await keyPolicy.evaluateProviderBudget(KEY, "codex", { operation: "image generation" });
+    expect(matched.budgetMatched).toBe(true);
+    expect(matched.rejectionResponse.status).toBe(403);
+    expect(await matched.rejectionResponse.json()).toMatchObject({
+      error: { code: "policy_violation" },
+    });
+
+    const unmatched = await keyPolicy.evaluateProviderBudget(KEY, "cursor", { operation: "image generation" });
+    expect(unmatched).toMatchObject({ budgetMatched: false, rejectionResponse: null });
+    expect(unmatched.releaseReservation).toEqual(expect.any(Function));
+  });
+
+  it("atomically reserves fixed cost so concurrent attempts cannot spend the same balance", async () => {
+    mockKeyRecord = {
+      policy: { budgets: [{ provider: "tavily", limitUsd: 1, period: "day" }] },
+    };
+    keyPolicy._setBudgetQuery(async () => 0.99);
+    const warmup = await keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0 });
+    warmup.releaseReservation();
+
+    const [first, second] = await Promise.all([
+      keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0.01, operation: "web search" }),
+      keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0.01, operation: "web search" }),
+    ]);
+    const results = [first, second];
+
+    expect(results.filter((result) => !result.rejectionResponse)).toHaveLength(1);
+    expect(results.filter((result) => result.rejectionResponse?.status === 429)).toHaveLength(1);
+    results.forEach((result) => result.releaseReservation());
+
+    const retry = await keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0.01 });
+    expect(retry.rejectionResponse).toBeNull();
+    retry.releaseReservation();
+  });
+
+  it("makes budget available after a failed attempt releases its reservation", async () => {
+    mockKeyRecord = {
+      policy: { budgets: [{ provider: "tavily", limitUsd: 1, period: "day" }] },
+    };
+    keyPolicy._setBudgetQuery(async () => 0.99);
+
+    const failedAttempt = await keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0.01 });
+    expect(failedAttempt.rejectionResponse).toBeNull();
+    failedAttempt.releaseReservation();
+    failedAttempt.releaseReservation();
+
+    const retry = await keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0.01 });
+    expect(retry.rejectionResponse).toBeNull();
+    retry.releaseReservation();
+  });
+
+  it("clears reservations when key policy state is reset", async () => {
+    mockKeyRecord = {
+      policy: { budgets: [{ provider: "tavily", limitUsd: 1, period: "day" }] },
+    };
+    keyPolicy._setBudgetQuery(async () => 0.99);
+
+    const beforeReset = await keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0.01 });
+    keyPolicy._resetKeyPolicyState();
+    const afterReset = await keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0.01 });
+    expect(afterReset.rejectionResponse).toBeNull();
+
+    beforeReset.releaseReservation();
+    const stillReserved = await keyPolicy.evaluateProviderBudget(KEY, "tavily", { costUsd: 0.01 });
+    expect(stillReserved.rejectionResponse?.status).toBe(429);
+    afterReset.releaseReservation();
+  });
+
+  it("returns a short 429 without opening a breaker for projected rejection", async () => {
+    mockKeyRecord = {
+      policy: { budgets: [{ provider: "*", limitUsd: 1, period: "day" }] },
+    };
+    keyPolicy._setBudgetQuery(async () => 0.995);
+
+    const result = await keyPolicy.evaluateProviderBudget(KEY, "tavily", {
+      costUsd: 0.008,
+      operation: "web search",
+    });
+
+    expect(result.budgetMatched).toBe(true);
+    expect(result.rejectionResponse.status).toBe(429);
+    expect(result.rejectionResponse.headers.get("retry-after")).toBe("1");
+
+    const cheaperAttempt = await keyPolicy.evaluateProviderBudget(KEY, "tavily", {
+      costUsd: 0.001,
+      operation: "web search",
+    });
+    expect(cheaperAttempt.rejectionResponse).toBeNull();
+
+    const status = await keyPolicy.getKeyPolicyStatus(KEY);
+    expect(status.breaker).toBeNull();
+    expect(status.providerBreakers).toEqual([]);
+    cheaperAttempt.releaseReservation();
+  });
+});
+
 describe("bumpBudgetCache", () => {
+  it("keeps day, week, and month caches distinct when their starts coincide", async () => {
+    const mondayMonthStart = Date.parse("2026-06-01T12:00:00.000Z");
+    let queries = 0;
+    keyPolicy._setBudgetQuery(async (_key, _provider, startMs, endMs) => {
+      queries += 1;
+      const days = (endMs - startMs) / 86400000;
+      if (days === 1) return 1;
+      if (days === 7) return 2;
+      return 3;
+    });
+    const policy = {
+      budgets: [
+        { provider: "tavily", limitUsd: 1.5, period: "day" },
+        { provider: "tavily", limitUsd: 2.5, period: "week" },
+        { provider: "tavily", limitUsd: 3.5, period: "month" },
+      ],
+    };
+
+    expect((await keyPolicy.checkBudget(KEY, policy, "tavily", mondayMonthStart)).ok).toBe(true);
+    expect(queries).toBe(3);
+  });
+
   it("increments cached spend for matching windows", async () => {
     keyPolicy._setBudgetQuery(async () => 4);
     const policy = { budgets: [{ provider: "codex", limitUsd: 5, period: "day" }] };
@@ -228,6 +352,26 @@ describe("bumpBudgetCache", () => {
     keyPolicy.bumpBudgetCache(KEY, "codex", 2);
 
     expect((await keyPolicy.checkBudget(KEY, policy, "codex")).ok).toBe(false);
+  });
+
+  it("does not bump a new period with usage accounted to the previous period", async () => {
+    vi.useFakeTimers();
+    try {
+      const oldWindow = Date.parse("2026-08-30T23:59:59.900Z");
+      const newWindow = Date.parse("2026-08-31T00:00:00.100Z");
+      const policy = { budgets: [{ provider: "tavily", limitUsd: 0.5, period: "day" }] };
+      keyPolicy._setBudgetQuery(async () => 0);
+
+      vi.setSystemTime(oldWindow);
+      expect((await keyPolicy.checkBudget(KEY, policy, "tavily", oldWindow)).ok).toBe(true);
+      vi.setSystemTime(newWindow);
+      expect((await keyPolicy.checkBudget(KEY, policy, "tavily", newWindow)).ok).toBe(true);
+
+      keyPolicy.bumpBudgetCache(KEY, "tavily", 1, oldWindow);
+      expect((await keyPolicy.checkBudget(KEY, policy, "tavily", newWindow)).ok).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("invalidateKeyPolicy forces a fresh DB read on next check", async () => {
