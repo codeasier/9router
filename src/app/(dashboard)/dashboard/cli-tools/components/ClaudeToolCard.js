@@ -7,6 +7,7 @@ import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
 import ApiKeySelect from "./ApiKeySelect";
 import { matchKnownEndpoint } from "./cliEndpointMatch";
+import { applyClaudeModelMappings } from "./claudeModelMappings";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_CLOUD_URL;
 
@@ -178,10 +179,7 @@ export default function ClaudeToolCard({
         env.ANTHROPIC_AUTH_TOKEN = keyToUse;
       }
 
-      tool.defaultModels.forEach((model) => {
-        const targetModel = modelMappings[model.alias];
-        if (targetModel && model.envKey) env[model.envKey] = targetModel;
-      });
+      applyClaudeModelMappings(env, tool.defaultModels, modelMappings);
       if (maxContextTokens) {
         env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = maxContextTokens;
       }
@@ -243,10 +241,7 @@ export default function ClaudeToolCard({
       ? selectedApiKey
       : (!cloudEnabled ? "sk_9router" : "<API_KEY_FROM_DASHBOARD>");
     const env = { ANTHROPIC_BASE_URL: getEffectiveBaseUrl(), ANTHROPIC_AUTH_TOKEN: keyToUse };
-    tool.defaultModels.forEach((model) => {
-      const targetModel = modelMappings[model.alias];
-      if (targetModel && model.envKey) env[model.envKey] = targetModel;
-    });
+    applyClaudeModelMappings(env, tool.defaultModels, modelMappings);
     if (maxContextTokens) {
       env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = maxContextTokens;
     }
