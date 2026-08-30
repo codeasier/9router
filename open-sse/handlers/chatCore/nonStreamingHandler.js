@@ -138,6 +138,89 @@ function openAICompletionToResponses(responseBody, customToolNames = null) {
   };
 }
 
+function collectResponsesText(item) {
+  if (typeof item?.text === "string") return item.text;
+  if (!Array.isArray(item?.content)) return "";
+  return item.content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part?.type === RESPONSES_ITEM.OUTPUT_TEXT || part?.type === "text") return part.text || "";
+      return "";
+    })
+    .join("");
+}
+
+function collectResponsesReasoning(item) {
+  if (typeof item?.text === "string" && item.text) return item.text;
+  if (Array.isArray(item?.summary)) {
+    return item.summary.map((part) => part?.text || "").filter(Boolean).join("\n");
+  }
+  if (Array.isArray(item?.content)) {
+    return item.content.map((part) => part?.text || "").filter(Boolean).join("\n");
+  }
+  return "";
+}
+
+/**
+ * Convert a non-streaming Responses API body into Chat Completions.
+ * Used when a chat/messages client is forced onto a /responses upstream.
+ */
+function responsesToOpenAICompletion(responseBody) {
+  if (responseBody?.choices) return responseBody;
+
+  const output = Array.isArray(responseBody?.output) ? responseBody.output : [];
+  let textContent = typeof responseBody?.output_text === "string" ? responseBody.output_text : "";
+  let reasoningContent = "";
+  const toolCalls = [];
+
+  for (const item of output) {
+    const type = item?.type;
+    if (type === RESPONSES_ITEM.REASONING) {
+      const text = collectResponsesReasoning(item);
+      if (text) reasoningContent = reasoningContent ? `${reasoningContent}\n${text}` : text;
+      continue;
+    }
+    if (type === RESPONSES_ITEM.FUNCTION_CALL || type === RESPONSES_ITEM.CUSTOM_TOOL_CALL) {
+      const rawArgs = type === RESPONSES_ITEM.CUSTOM_TOOL_CALL
+        ? (typeof item.input === "string" ? JSON.stringify({ input: item.input }) : JSON.stringify(item.input ?? {}))
+        : (typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}));
+      toolCalls.push({
+        id: item.call_id || item.id || `call_${toolCalls.length}`,
+        type: "function",
+        function: { name: item.name || "", arguments: rawArgs },
+      });
+      continue;
+    }
+    if (type === RESPONSES_ITEM.MESSAGE || type === RESPONSES_ITEM.OUTPUT_TEXT || item?.role === ROLE.ASSISTANT) {
+      const text = collectResponsesText(item);
+      if (text) textContent += text;
+    }
+  }
+
+  const message = { role: ROLE.ASSISTANT, content: textContent || (toolCalls.length ? null : "") };
+  if (reasoningContent) message.reasoning_content = reasoningContent;
+  if (toolCalls.length) message.tool_calls = toolCalls;
+
+  const usage = responseBody?.usage || {};
+  const promptTokens = usage.input_tokens ?? usage.prompt_tokens ?? 0;
+  const completionTokens = usage.output_tokens ?? usage.completion_tokens ?? 0;
+  let finishReason = toolCalls.length ? "tool_calls" : "stop";
+  if (responseBody?.status === "incomplete") finishReason = "length";
+
+  return {
+    id: String(responseBody?.id || `chatcmpl-${Date.now()}`).replace(/^resp_/, "chatcmpl-"),
+    object: "chat.completion",
+    created: responseBody?.created_at || responseBody?.created || Math.floor(Date.now() / 1000),
+    model: responseBody?.model || "unknown",
+    choices: [{ index: 0, message, finish_reason: finishReason }],
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: usage.total_tokens ?? (promptTokens + completionTokens),
+    },
+  };
+}
+
 /**
  * Translate non-streaming response body from provider format → OpenAI format.
  */
@@ -147,6 +230,13 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
   // Responses API — convert so tool_calls/text surface as Responses `output`.
   if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES) {
     return openAICompletionToResponses(responseBody, customToolNames);
+  }
+  // Inverse: /responses upstream for a Chat Completions or Claude client.
+  if (targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI) {
+    return responsesToOpenAICompletion(responseBody);
+  }
+  if (targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.CLAUDE) {
+    return openAICompletionToClaudeMessage(responsesToOpenAICompletion(responseBody));
   }
   if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.CLAUDE) {
     return openAICompletionToClaudeMessage(responseBody);

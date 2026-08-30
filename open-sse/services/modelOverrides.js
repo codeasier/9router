@@ -57,6 +57,16 @@ export function normalizeProtocol(value) {
   return PROTOCOL_ALIASES[key] || null;
 }
 
+export function applyModelOverridePatch(overrides, key, patch) {
+  const next = { ...(overrides && typeof overrides === "object" ? overrides : {}) };
+  const entry = { ...(next[key] || {}), ...(patch && typeof patch === "object" ? patch : {}) };
+  if (!entry.thinking || entry.thinking === "auto") delete entry.thinking;
+  if (!entry.protocol || entry.protocol === "auto") delete entry.protocol;
+  if (Object.keys(entry).length === 0) delete next[key];
+  else next[key] = entry;
+  return next;
+}
+
 export function overrideLookupKeys(provider, model) {
   const clean = stripThinkingSuffix(model);
   const normalized = normalizeModelId(clean);
