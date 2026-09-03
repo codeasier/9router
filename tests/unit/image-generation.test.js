@@ -543,4 +543,307 @@ describe("handleImageGenerationCore", () => {
     expect(result.success).toBe(true);
     expect(onRequestSuccess).toHaveBeenCalledTimes(1);
   });
+
+  describe("Step Plan", () => {
+    const modelInfo = { provider: "step-plan", model: "step-image-edit-2" };
+    const credentials = { apiKey: "step-key" };
+    const successBody = {
+      id: "image-request-1",
+      created: 1234567890,
+      data: [{ url: "https://example.com/step.png", finish_reason: "success", seed: 0 }],
+    };
+
+    async function generate(body, options = {}) {
+      return handleImageGenerationCore({
+        body: { prompt: "A paper lantern", ...body },
+        modelInfo,
+        credentials: options.credentials || credentials,
+        binaryOutput: options.binaryOutput,
+        log: null,
+      });
+    }
+
+    it("uses the fixed endpoint, Bearer API key, and minimal defaults", async () => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(successBody), { status: 200 })
+      );
+
+      const result = await generate({
+        size: "auto",
+        quality: "hd",
+        style: "vivid",
+        background: "transparent",
+        image_detail: "high",
+        output_format: "webp",
+      });
+
+      expect(result.success).toBe(true);
+      expect(global.fetch).toHaveBeenCalledWith(
+        "https://api.stepfun.com/step_plan/v1/images/generations",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer step-key",
+          },
+          body: JSON.stringify({
+            model: "step-image-edit-2",
+            prompt: "A paper lantern",
+            n: 1,
+          }),
+        }
+      );
+      expect(await result.response.json()).toEqual(successBody);
+    });
+
+    it("accepts accessToken credentials", async () => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(successBody), { status: 200 })
+      );
+
+      await generate({}, { credentials: { accessToken: "step-token" } });
+
+      expect(global.fetch.mock.calls[0][1].headers.Authorization).toBe("Bearer step-token");
+    });
+
+    it("forwards every supported field and preserves explicit falsey values", async () => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(successBody), { status: 200 })
+      );
+
+      await generate({
+        n: 1.0,
+        size: "768x1360",
+        response_format: "b64_json",
+        seed: 0,
+        steps: 8,
+        cfg_scale: 1.5,
+        negative_prompt: "",
+        text_mode: false,
+      });
+
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
+        model: "step-image-edit-2",
+        prompt: "A paper lantern",
+        n: 1,
+        size: "768x1360",
+        response_format: "b64_json",
+        seed: 0,
+        steps: 8,
+        cfg_scale: 1.5,
+        negative_prompt: "",
+        text_mode: false,
+      });
+    });
+
+    it("maps the compatibility cfg field to cfg_scale", async () => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(successBody), { status: 200 })
+      );
+
+      const result = await generate({ cfg: 1.5 });
+
+      expect(result.success).toBe(true);
+      const request = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(request.cfg_scale).toBe(1.5);
+      expect(request).not.toHaveProperty("cfg");
+    });
+
+    it.each(["1024x1024", "768x1360", "896x1184", "1360x768", "1184x896"])(
+      "forwards documented size %s unchanged",
+      async (size) => {
+        global.fetch.mockResolvedValueOnce(
+          new Response(JSON.stringify(successBody), { status: 200 })
+        );
+
+        await generate({ size });
+
+        expect(JSON.parse(global.fetch.mock.calls[0][1].body).size).toBe(size);
+      }
+    );
+
+    it("accepts inclusive upper validation boundaries", async () => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(successBody), { status: 200 })
+      );
+
+      const prompt = "😀".repeat(512);
+      const negativePrompt = "界".repeat(512);
+      const result = await generate({
+        prompt,
+        seed: 2147483647,
+        steps: 50,
+        cfg_scale: 10,
+        negative_prompt: negativePrompt,
+        text_mode: true,
+        response_format: "url",
+      });
+
+      expect(result.success).toBe(true);
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({
+        prompt,
+        seed: 2147483647,
+        steps: 50,
+        cfg_scale: 10,
+        negative_prompt: negativePrompt,
+        text_mode: true,
+        response_format: "url",
+      });
+    });
+
+    it("accepts inclusive lower numeric boundaries", async () => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(successBody), { status: 200 })
+      );
+
+      const result = await generate({ seed: 0, steps: 1, cfg_scale: 1 });
+
+      expect(result.success).toBe(true);
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({
+        seed: 0,
+        steps: 1,
+        cfg_scale: 1,
+      });
+    });
+
+    it.each([
+      ["missing prompt", { prompt: "" }],
+      ["non-string prompt", { prompt: 42 }],
+      ["prompt over 512 code points", { prompt: "😀".repeat(513) }],
+      ["null count", { n: null }],
+      ["string count", { n: "1" }],
+      ["fractional count", { n: 1.1 }],
+      ["zero count", { n: 0 }],
+      ["count above one", { n: 2 }],
+      ["unknown size", { size: "1536x1024" }],
+      ["non-string size", { size: 1024 }],
+      ["unknown response format", { response_format: "binary" }],
+      ["non-string response format", { response_format: false }],
+      ["negative seed", { seed: -1 }],
+      ["seed above maximum", { seed: 2147483648 }],
+      ["fractional seed", { seed: 0.5 }],
+      ["string seed", { seed: "0" }],
+      ["steps below minimum", { steps: 0 }],
+      ["steps above maximum", { steps: 51 }],
+      ["fractional steps", { steps: 1.5 }],
+      ["string steps", { steps: "8" }],
+      ["cfg scale below minimum", { cfg_scale: 0.9 }],
+      ["cfg scale above maximum", { cfg_scale: 10.1 }],
+      ["string cfg scale", { cfg_scale: "1.0" }],
+      ["non-finite cfg scale", { cfg_scale: Infinity }],
+      ["non-string negative prompt", { negative_prompt: false }],
+      ["negative prompt over 512 code points", { negative_prompt: "界".repeat(513) }],
+      ["non-boolean text mode", { text_mode: "false" }],
+    ])("rejects %s locally without fetch", async (_label, body) => {
+      const result = await generate(body);
+
+      expect(result.success).toBe(false);
+      expect(result.status).toBe(400);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        "URL",
+        {
+          id: "url-id",
+          created: 100,
+          data: [{ url: "https://example.com/step.png", finish_reason: "success", seed: 17 }],
+        },
+      ],
+      [
+        "base64",
+        {
+          id: "b64-id",
+          created: 101,
+          data: [{ b64_json: "AQID", finish_reason: "success", seed: 18 }],
+        },
+      ],
+    ])("preserves the complete %s response by identity", async (_label, upstreamBody) => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(upstreamBody), { status: 200 })
+      );
+
+      const result = await generate({});
+
+      expect(result.success).toBe(true);
+      expect(await result.response.json()).toEqual(upstreamBody);
+    });
+
+    it("converts a Step Plan base64 result to binary", async () => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ created: 1, data: [{ b64_json: "AQID" }] }), { status: 200 })
+      );
+
+      const result = await generate({}, { binaryOutput: true });
+
+      expect(result.success).toBe(true);
+      expect(result.response.headers.get("Content-Type")).toBe("image/png");
+      expect(new Uint8Array(await result.response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    });
+
+    it("fetches and converts a Step Plan URL result to binary", async () => {
+      global.fetch
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ created: 1, data: [{ url: "https://example.com/step.png" }] }), { status: 200 })
+        )
+        .mockResolvedValueOnce(
+          new Response(new Uint8Array([4, 5, 6]), { status: 200, headers: { "Content-Type": "image/png" } })
+        );
+
+      const result = await generate({}, { binaryOutput: true });
+
+      expect(result.success).toBe(true);
+      expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/step.png");
+      expect(new Uint8Array(await result.response.arrayBuffer())).toEqual(new Uint8Array([4, 5, 6]));
+    });
+
+    it("returns 502 for an invalid JSON success body", async () => {
+      global.fetch.mockResolvedValueOnce(new Response("not json", { status: 200 }));
+
+      const result = await generate({});
+
+      expect(result.success).toBe(false);
+      expect(result.status).toBe(502);
+    });
+
+    it("does not impose new structural validation on a valid JSON success body", async () => {
+      const upstreamBody = { status: "accepted" };
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify(upstreamBody), { status: 200 })
+      );
+
+      const result = await generate({});
+
+      expect(result.success).toBe(true);
+      expect(await result.response.json()).toEqual(upstreamBody);
+    });
+
+    it.each([
+      [401, "Invalid API key"],
+      [403, "Forbidden"],
+      [429, "Rate limit exceeded"],
+      [500, "Step Plan unavailable"],
+    ])("preserves upstream HTTP %s failures", async (status, message) => {
+      global.fetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message } }), { status })
+      );
+
+      const result = await generate({});
+
+      expect(result.success).toBe(false);
+      expect(result.status).toBe(status);
+      expect(result.error).toContain(message);
+    });
+
+    it("uses existing network failure behavior", async () => {
+      global.fetch.mockRejectedValueOnce(new Error("Step Plan timeout"));
+
+      const result = await generate({});
+
+      expect(result.success).toBe(false);
+      expect(result.status).toBe(502);
+      expect(result.error).toContain("Step Plan timeout");
+    });
+  });
 });

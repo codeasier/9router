@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROVIDER_MODELS, getModelSupportedFormats } from "../../open-sse/config/providerModels.js";
+import { PROVIDER_MODELS, getModelSupportedFormats, getModelTargetFormat } from "../../open-sse/config/providerModels.js";
 import { PROVIDERS } from "../../open-sse/config/providers.js";
 import { resolveTransport } from "../../open-sse/services/provider.js";
 
@@ -9,6 +9,8 @@ const CHAT_ONLY = ["glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6", "mimo-v2
 const CLAUDE_CAPABLE = ["minimax-m3", "minimax-m2.7", "minimax-m2.5", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"];
 // Models that also expose the OpenAI /responses endpoint
 const RESPONSES_CAPABLE = ["deepseek-v4-pro", "deepseek-v4-flash"];
+// Muse Spark is served by /responses only (mirrors the opencode free-tier entries)
+const RESPONSES_ONLY = ["muse-spark-1.2-contributor", "muse-spark-1.3-contributor"];
 
 // Mirror of chatCore's per-model transport guard: use the sourceFormat-matched
 // transport only when the model declares support for that sourceFormat.
@@ -27,7 +29,15 @@ describe("OpenCode Go model catalog", () => {
       "mimo-v2.5", "mimo-v2.5-pro",
       "minimax-m3", "minimax-m2.7", "minimax-m2.5",
       "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
+      "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
     ]);
+  });
+
+  it("declares responses-only routing for Muse Spark (targetFormat + supportedFormats)", () => {
+    for (const m of RESPONSES_ONLY) {
+      expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai-responses"]);
+      expect(getModelTargetFormat("opencode-go", m)).toBe("openai-responses");
+    }
   });
 });
 

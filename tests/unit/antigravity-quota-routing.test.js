@@ -17,6 +17,14 @@ vi.mock("@/lib/localDb", () => ({
 vi.mock("@/lib/network/connectionProxy", () => ({
   resolveConnectionProxyConfig: mocks.resolveConnectionProxyConfig,
   pickProxyPoolId: vi.fn(),
+  toCredentialProxyFields: (proxy = {}) => ({
+    connectionProxyEnabled: proxy.connectionProxyEnabled,
+    connectionProxyUrl: proxy.connectionProxyUrl,
+    connectionNoProxy: proxy.connectionNoProxy,
+    connectionProxyPoolId: proxy.proxyPoolId || null,
+    vercelRelayUrl: proxy.vercelRelayUrl || "",
+    strictProxy: proxy.strictProxy === true,
+  }),
 }));
 vi.mock("@/shared/constants/providers.js", () => ({
   FREE_PROVIDERS: {},

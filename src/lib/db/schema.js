@@ -1,9 +1,8 @@
-// ⚠️ AGENT/DEV: Bump this by +1 EVERY TIME you change the schema below
-// (add/remove/alter a table, column, or index in TABLES). It drives the
-// pre-change safety backup in migrate.js: when the stored version is lower,
-// one lightweight DB backup is taken before applying schema changes. Forgetting
-// to bump only skips that backup — it does NOT break the additive auto-sync.
+// Official v0.5.59 schema namespace. Fork-only changes must not bump this.
 export const SCHEMA_VERSION = 1;
+
+// Fork schema namespace. Bump for fork table, column, or index changes below.
+export const FORK_SCHEMA_VERSION = 4;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -82,6 +81,7 @@ export const TABLES = {
       name: "TEXT",
       machineId: "TEXT",
       isActive: "INTEGER DEFAULT 1",
+      policy: "TEXT",
       createdAt: "TEXT NOT NULL",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
@@ -127,6 +127,7 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_provider ON usageHistory(provider)",
       "CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_apiKey_ts ON usageHistory(apiKey, timestamp DESC)",
     ],
   },
   usageDaily: {
@@ -150,6 +151,25 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+    ],
+  },
+  codexResetCreditAttempts: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      accountIdentity: "TEXT NOT NULL",
+      connectionId: "TEXT NOT NULL",
+      creditFingerprint: "TEXT NOT NULL",
+      creditExpiresAt: "TEXT",
+      availableCountBefore: "INTEGER NOT NULL",
+      redeemRequestId: "TEXT UNIQUE NOT NULL",
+      status: "TEXT NOT NULL",
+      result: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_cra_account ON codexResetCreditAttempts(accountIdentity, createdAt DESC)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_cra_one_active_account ON codexResetCreditAttempts(accountIdentity) WHERE status IN ('planned', 'dispatching', 'unknown', 'auth_required')",
     ],
   },
 };

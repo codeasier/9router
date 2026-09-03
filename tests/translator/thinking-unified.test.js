@@ -210,11 +210,15 @@ describe("applyThinking per provider format", () => {
     ["gpt-5.6-luna", "ultra", "max"],
   ])("normalizes Codex %s effort %s to %s", (model, effort, expected) => {
     const out = apply("openai-responses", model, { reasoning: { effort } }, "codex");
-    expect(out.reasoning_effort).toBe(expected);
+    // Responses wire carries thinking as reasoning:{effort} (reasoning_effort is
+    // chat-only and rejected with 400); the Codex executor accepts this shape.
+    expect(out.reasoning?.effort).toBe(expected);
+    expect(out.reasoning_effort).toBeUndefined();
   });
   it("applies a supported Codex Ultra suffix", () => {
     const out = apply("openai-responses", "gpt-5.6-sol(ultra)", {}, "codex");
-    expect(out.reasoning_effort).toBe("ultra");
+    expect(out.reasoning?.effort).toBe("ultra");
+    expect(out.reasoning_effort).toBeUndefined();
   });
   it("keeps Codex-only GPT-5.6 levels out of Kiro translation", () => {
     const out = apply("openai", "gpt-5.6-sol", { reasoning_effort: "max" }, "kiro");
@@ -239,6 +243,16 @@ describe("applyThinking per provider format", () => {
   it("Gemini model over its native format (antigravity/gemini-cli/vertex) still gets generationConfig", () => {
     const out = apply("gemini-cli", "gemini-3.5-flash-lite", { reasoning_effort: "medium" }, "gemini-cli");
     expect(out.generationConfig.thinkingConfig.thinkingLevel).toBe("medium");
+  });
+  it("forced gateway intent beats a client thinking suffix", () => {
+    const body = { reasoning_effort: "low" };
+    applyThinking("openai", "gpt-5(high)", body, "openai", { mode: "level", level: "minimal", force: true });
+    expect(body.reasoning_effort).toBe("minimal");
+  });
+  it("unforced intent still loses to a client thinking suffix", () => {
+    const body = { reasoning_effort: "low" };
+    applyThinking("openai", "gpt-5(high)", body, "openai", { mode: "level", level: "minimal" });
+    expect(body.reasoning_effort).toBe("high");
   });
 });
 
