@@ -203,7 +203,7 @@ export function resolveChatRouting({
   // sourceFormat-matched transport if that format is declared (opencode-go models
   // differ — kimi/glm only do /chat/completions). Undeclared models keep the
   // upstream default (use the transport), preserving behavior for glm/deepseek/...
-  const useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat))
+  let useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat))
     ? runtimeTransport
     : null;
   // A source-format-matched endpoint keeps the request lossless. Prefer it over a
@@ -212,5 +212,11 @@ export function resolveChatRouting({
   // should stay on /chat/completions; other clients can fall back to its declared
   // Claude target). Mirrors upstream v0.5.59 (fix #3418).
   const targetFormat = useTransport?.format || modelTargetFormat || providerFormat;
+  // Guard failed (useTransport null) but the target pins another endpoint: point
+  // the URL at the target too, otherwise the translated body would be posted to
+  // the provider default (e.g. a Responses body → /chat/completions).
+  if (!useTransport && targetFormat) {
+    useTransport = buildForcedTransport(provider, targetFormat, credentials) || null;
+  }
   return { targetFormat, useTransport, override, thinkingIntent };
 }

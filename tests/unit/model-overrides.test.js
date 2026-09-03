@@ -123,8 +123,17 @@ describe("resolveChatRouting protocol force", () => {
     expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
   });
 
-  it("forces chat transport even when the client sent messages", () => {
+  it("routes Muse Spark to responses by default (no override needed)", () => {
     const routing = resolveChatRouting({
+      provider: "opencode-go",
+      model: "muse-spark-1.3-contributor",
+      sourceFormat: FORMATS.OPENAI,
+    });
+    expect(routing.targetFormat).toBe(FORMATS.OPENAI_RESPONSES);
+    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
+  });
+
+  it("forces chat transport even when the client sent messages", () => {    const routing = resolveChatRouting({
       provider: "opencode-go",
       model: "deepseek-v4-flash",
       sourceFormat: FORMATS.CLAUDE,

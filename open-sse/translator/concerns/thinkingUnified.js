@@ -10,8 +10,10 @@ import { LEVEL_TO_BUDGET, budgetToLevel, effortToBudget, effortToThinkingLevel }
 // Map a target wire-format to its native thinking format (when capability has none).
 const FORMAT_TO_NATIVE = {
   openai: "openai",
-  "openai-responses": "openai",
-  "openai-response": "openai",
+  // Responses wire takes reasoning:{effort,summary} — never the chat-only
+  // reasoning_effort field (upstreams reject it with 400 unknown parameter).
+  "openai-responses": "openai-responses",
+  "openai-response": "openai-responses",
   codex: "openai",
   claude: "claude-budget",
   gemini: "gemini-budget",
@@ -128,6 +130,12 @@ function openAIThinkingDisplay(body) {
 const NATIVE_ONLY_FORMATS = new Set(["gemini-level", "gemini-budget", "claude-budget", "claude-adaptive", "kiro"]);
 
 function resolveFormat(targetFormat, model, provider) {
+  // Responses wire always takes reasoning:{effort} — a provider-native chat
+  // field (e.g. deepseek thinking.enabled + reasoning_effort) would be
+  // rejected by the /responses endpoint, so the target wire wins here.
+  if (targetFormat === "openai-responses" || targetFormat === "openai-response") {
+    return "openai-responses";
+  }
   if (targetFormat === "commandcode") return "commandcode";
   const providerFmt = provider ? PROVIDERS[provider]?.thinkingFormat : null;
   if (providerFmt) return providerFmt;
@@ -262,6 +270,14 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
       if (none && canDisable) { body.reasoning_effort = "none"; break; }
       const level = toLevel(eff);
       if (level) body.reasoning_effort = normalizeOpenAILevel(level, supportedLevels);
+      break;
+    }
+    case "openai-responses": {
+      // Responses API has no reasoning_effort param — thinking travels as
+      // reasoning:{effort,summary}. Omitting the object disables it.
+      if (none && canDisable) break;
+      const level = toLevel(eff);
+      if (level) body.reasoning = { effort: normalizeOpenAILevel(level, supportedLevels), summary: "auto" };
       break;
     }
     case "claude-adaptive": {
