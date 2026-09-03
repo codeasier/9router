@@ -170,11 +170,17 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (provider === "codex") {
       const suffixThinking = {};
       applyThinking(sourceFormat, upstreamModel, suffixThinking, provider, forcedThinking);
-      if (suffixThinking.reasoning_effort) {
+      // applyThinking emits the wire shape for the source format: reasoning_effort
+      // on chat wire, reasoning:{effort} on Responses wire. Read both.
+      const suffixEffort = suffixThinking.reasoning_effort
+        ?? (suffixThinking.reasoning && typeof suffixThinking.reasoning === "object" && !Array.isArray(suffixThinking.reasoning)
+          ? suffixThinking.reasoning.effort
+          : null);
+      if (typeof suffixEffort === "string" && suffixEffort) {
         const reasoning = translatedBody.reasoning;
         translatedBody.reasoning = {
           ...(reasoning && typeof reasoning === "object" && !Array.isArray(reasoning) ? reasoning : {}),
-          effort: suffixThinking.reasoning_effort,
+          effort: suffixEffort,
         };
         delete translatedBody.reasoning_effort;
       }
