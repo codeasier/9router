@@ -15,6 +15,8 @@ const RESPONSES_CAPABLE = ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4.
 // Served from /messages only — /chat/completions answers ModelProtocolUnsupported,
 // so every other client wire has to translate through the declared claude target.
 const CLAUDE_ONLY = ["claude-haiku-5-5"];
+// Muse Spark is served by /responses only (mirrors the opencode free-tier entries)
+const RESPONSES_ONLY = ["muse-spark-1.2-contributor", "muse-spark-1.3-contributor"];
 
 // Mirror of chatCore's per-model transport guard: use the sourceFormat-matched
 // transport only when the model declares support for that sourceFormat.
@@ -39,6 +41,13 @@ describe("OpenCode Go model catalog", () => {
       "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
       "claude-haiku-5-5",
     ]);
+  });
+
+  it("declares responses-only routing for Muse Spark (targetFormat + supportedFormats)", () => {
+    for (const m of RESPONSES_ONLY) {
+      expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai-responses"]);
+      expect(getModelTargetFormat("opencode-go", m)).toBe("openai-responses");
+    }
   });
 });
 
