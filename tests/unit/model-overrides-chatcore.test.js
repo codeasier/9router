@@ -127,4 +127,39 @@ describe("handleChatCore per-model overrides", () => {
     expect(call.body.max_tokens).toBeUndefined();
     expect(call.body.stream).toBe(false);
   });
+
+  it("sends reasoning:{effort} (not chat-only reasoning_effort) on forced responses + thinking", async () => {
+    const credentials = { apiKey: "test-key", providerSpecificData: {} };
+    const body = {
+      model: "ocg/muse-spark-1.3-contributor",
+      stream: false,
+      messages: [{ role: "user", content: "hi" }],
+    };
+
+    await handleChatCore({
+      body,
+      modelInfo: { provider: "opencode-go", model: "muse-spark-1.3-contributor" },
+      credentials,
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn() },
+      connectionId: "test-conn",
+      rtkEnabled: false,
+      cavemanEnabled: false,
+      ponytailEnabled: false,
+      modelOverrides: {
+        "opencode-go/muse-spark-1.3-contributor": { protocol: "openai-responses", thinking: "xhigh" },
+      },
+      clientRawRequest: {
+        endpoint: "/v1/chat/completions",
+        body,
+        headers: { accept: "application/json" },
+      },
+    });
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const call = executeMock.mock.calls[0][0];
+    expect(credentials.runtimeTransport.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
+    // Regression: reasoning_effort on /responses 400s with unknown parameter.
+    expect(call.body.reasoning_effort).toBeUndefined();
+    expect(call.body.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+  });
 });
