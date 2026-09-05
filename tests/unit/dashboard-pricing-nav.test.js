@@ -43,6 +43,15 @@ describe("dashboard pricing page discoverability (#16)", () => {
     expect(getPageInfo("/dashboard/profile").title).toBe("Settings");
   });
 
+  it("uses opaque theme surface colors instead of undefined bg-bg-* tokens", () => {
+    const source = readRepo("src/shared/components/PricingModal.js");
+    expect(source).toContain("relative w-full max-w-6xl");
+    expect(source).toContain("bg-surface");
+    expect(source).not.toContain("bg-bg-base");
+    expect(source).not.toContain("bg-bg-subtle");
+    expect(source).not.toContain("bg-bg-hover");
+  });
+
   it("redirects the legacy settings URL to the new path", async () => {
     const redirects = await nextConfig.redirects();
     expect(redirects).toEqual(expect.arrayContaining([
