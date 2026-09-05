@@ -12,7 +12,7 @@
 - **i18n**: complete Indonesian translation (1391 keys)
 
 ## Fixes
-- **UI**: mount Pricing in the dashboard System menu and route group so custom rates are reachable from the sidebar (#16)
+- **UI**: mount Pricing in the dashboard System menu and route group so custom rates are reachable from the sidebar (#16); include custom models in the editor and allow adding any provider/model
 - **Security**: close SSRF guard bypasses in `ssrfGuard.js` (alternate IPv6 encodings, hostname trailing dots, wildcard DNS resolution check, safe redirect handling) (#3714)
 - **Model markers**: strip the `[1m]` context marker Claude Code appends to model names (`claude-opus-5[1m]`) preventing model resolution failures (#3690)
 - **Claude**: drop `server_tool_use` blocks carrying foreign IDs to avoid Anthropic 400 rejections; never anchor cache breakpoints on `defer_loading` tools (#3567)
