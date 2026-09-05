@@ -658,7 +658,7 @@ Response:
 **Issue: Ước tính chi phí sai**
 
 **Giải pháp:**
-1. Dashboard → Settings → Pricing
+1. Dashboard → Pricing
 2. Xác minh giá mỗi provider khớp với mức hiện tại
 3. Cập nhật giá nếu provider thay đổi
 4. Liên hệ support nếu vẫn lệch
