@@ -658,7 +658,7 @@ Response:
 **Issue: Cost estimation incorrect**
 
 **Solution:**
-1. Dashboard → Settings → Pricing
+1. Dashboard → Pricing
 2. Verify pricing per provider matches current rates
 3. Update pricing if provider changed rates
 4. Contact support if discrepancy persists

@@ -1,22 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import Card from "@/shared/components/Card";
 import PricingModal from "@/shared/components/PricingModal";
 
 export default function PricingSettingsPage() {
-  const router = useRouter();
   const [showModal, setShowModal] = useState(false);
   const [currentPricing, setCurrentPricing] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadPricing();
-  }, []);
-
   const loadPricing = async () => {
-    setLoading(true);
     try {
       const response = await fetch("/api/pricing");
       if (response.ok) {
@@ -29,6 +22,10 @@ export default function PricingSettingsPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    loadPricing();
+  }, []);
 
   const handlePricingUpdated = () => {
     loadPricing();
@@ -51,7 +48,7 @@ export default function PricingSettingsPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
