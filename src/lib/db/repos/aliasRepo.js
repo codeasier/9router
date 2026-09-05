@@ -47,11 +47,19 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name, ca
     db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
     added = true;
   });
+  try {
+    const { invalidatePricingCache } = await import("./pricingRepo.js");
+    invalidatePricingCache();
+  } catch { /* pricing cache is optional */ }
   return added;
 }
 
 export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
   await customKv.remove(customKey(providerAlias, id, type));
+  try {
+    const { invalidatePricingCache } = await import("./pricingRepo.js");
+    invalidatePricingCache();
+  } catch { /* pricing cache is optional */ }
 }
 
 // mitmAlias: key=toolName, value=mappings object
