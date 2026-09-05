@@ -1,6 +1,7 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
+import { lookupUserPricing, mergeCustomModelsIntoPricing } from "@/shared/utils/pricingEditor.js";
 
 const pricingKv = makeKv("pricing");
 const CACHE_TTL_MS = 5000;
@@ -11,8 +12,25 @@ function invalidate() {
   cache = { value: null, expiresAt: 0 };
 }
 
+export function invalidatePricingCache() {
+  invalidate();
+}
+
 async function getUserPricing() {
   return await pricingKv.getAll();
+}
+
+async function providerAliasKeys(provider) {
+  if (!provider) return [];
+  const { PROVIDER_ID_TO_ALIAS } = await import("open-sse/config/providerModels.js");
+  const keys = new Set();
+  const alias = PROVIDER_ID_TO_ALIAS[provider];
+  if (alias) keys.add(alias);
+  for (const [id, mappedAlias] of Object.entries(PROVIDER_ID_TO_ALIAS)) {
+    if (mappedAlias === provider) keys.add(id);
+  }
+  keys.delete(provider);
+  return [...keys];
 }
 
 export async function getPricing() {
@@ -20,7 +38,7 @@ export async function getPricing() {
   if (cache.value && cache.expiresAt > now) return cache.value;
 
   const userPricing = await getUserPricing();
-  const { PROVIDER_PRICING } = await import("open-sse/providers/pricing.js");
+  const { PROVIDER_PRICING, getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
   const merged = {};
 
   for (const [provider, models] of Object.entries(PROVIDER_PRICING)) {
@@ -44,6 +62,9 @@ export async function getPricing() {
     }
   }
 
+  const { getCustomModels } = await import("./aliasRepo.js");
+  mergeCustomModelsIntoPricing(merged, await getCustomModels(), resolveConst);
+
   cache = { value: merged, expiresAt: now + CACHE_TTL_MS };
   return merged;
 }
@@ -51,7 +72,9 @@ export async function getPricing() {
 export async function getPricingForModel(provider, model) {
   if (!model) return null;
   const userPricing = await getUserPricing();
-  if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
+  const altKeys = await providerAliasKeys(provider);
+  const user = lookupUserPricing(userPricing, provider, model, altKeys);
+  if (user) return user;
   const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
   return resolveConst(provider, model);
 }
