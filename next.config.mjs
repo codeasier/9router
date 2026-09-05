@@ -60,6 +60,15 @@ const nextConfig = {
     };
     return config;
   },
+  async redirects() {
+    return [
+      {
+        source: "/dashboard/settings/pricing",
+        destination: "/dashboard/pricing",
+        permanent: true,
+      },
+    ];
+  },
   async rewrites() {
     return [
       {
