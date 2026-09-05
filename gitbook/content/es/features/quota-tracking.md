@@ -658,7 +658,7 @@ Response:
 **Problema: Estimación de costos incorrecta**
 
 **Solución:**
-1. Dashboard → Settings → Pricing
+1. Dashboard → Pricing
 2. Verifica que el precio por proveedor coincida con las tarifas actuales
 3. Actualiza el precio si el proveedor cambió las tarifas
 4. Contacta a soporte si la discrepancia persiste
