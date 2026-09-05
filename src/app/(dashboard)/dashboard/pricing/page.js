@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Card from "@/shared/components/Card";
 import PricingModal from "@/shared/components/PricingModal";
+import { getDefaultPricing } from "open-sse/providers/pricing.js";
 
 export default function PricingSettingsPage() {
   const [showModal, setShowModal] = useState(false);
@@ -46,6 +47,8 @@ export default function PricingSettingsPage() {
     if (!currentPricing) return [];
     return Object.keys(currentPricing).sort();
   };
+
+  const catalogProviders = useMemo(() => new Set(Object.keys(getDefaultPricing() || {})), []);
 
   return (
     <div className="space-y-6">
@@ -116,8 +119,8 @@ export default function PricingSettingsPage() {
             <li><strong>Cache Creation:</strong> Tokens used to create cache entries (fallback to input rate)</li>
           </ul>
           <p>
-            <strong>Custom Pricing:</strong> You can override default pricing for specific models.
-            Reset to defaults anytime to restore standard rates.
+            <strong>Custom Pricing:</strong> Custom models and any provider/model you add are editable here.
+            Catalog defaults (GitHub Copilot, TokenRouter, …) stay available under Catalog. Reset restores standard rates.
           </p>
         </div>
       </Card>
@@ -138,7 +141,12 @@ export default function PricingSettingsPage() {
           <div className="text-center py-4 text-text-muted">Loading pricing data...</div>
         ) : currentPricing ? (
           <div className="space-y-3">
-            {Object.keys(currentPricing).slice(0, 5).map(provider => (
+            {Object.keys(currentPricing).sort((a, b) => {
+              const aCatalog = catalogProviders.has(a);
+              const bCatalog = catalogProviders.has(b);
+              if (aCatalog !== bCatalog) return aCatalog ? 1 : -1;
+              return a.localeCompare(b);
+            }).map((provider) => (
               <div key={provider} className="text-sm">
                 <span className="font-semibold">{provider.toUpperCase()}:</span>{" "}
                 <span className="text-text-muted">
@@ -146,11 +154,6 @@ export default function PricingSettingsPage() {
                 </span>
               </div>
             ))}
-            {Object.keys(currentPricing).length > 5 && (
-              <div className="text-sm text-text-muted">
-                + {Object.keys(currentPricing).length - 5} more providers
-              </div>
-            )}
           </div>
         ) : (
           <div className="text-text-muted">No pricing data available</div>

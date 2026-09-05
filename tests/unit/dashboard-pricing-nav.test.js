@@ -28,6 +28,13 @@ describe("dashboard pricing page discoverability (#16)", () => {
     expect(page).not.toContain("useRouter");
   });
 
+  it("lets the editor add models outside the GH/TokenRouter catalog", () => {
+    const modal = readRepo("src/shared/components/PricingModal.js");
+    expect(modal).toContain("Add model");
+    expect(modal).toContain("/api/models/custom");
+    expect(modal).toContain("Your models");
+  });
+
   it("is linked from the System sidebar section", () => {
     const systemItems = sliceSystemItems(readRepo("src/shared/components/Sidebar.js"));
     expect(systemItems).toContain('href: "/dashboard/pricing"');
