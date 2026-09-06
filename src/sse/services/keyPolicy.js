@@ -515,19 +515,24 @@ async function resolveProvider(provider) {
  * `provider` may be null when unknown at entry (combo etc.) — then only
  * "*" budgets and the whole-key breaker apply.
  *
+ * `skipBudget: true` skips breaker and spend checks (image generation/edit)
+ * but still applies maxConcurrent.
+ *
  * Returns { ok: false, response } to reject, or
  * { ok: true, policy, wrap(response) } where wrap() releases the slot when
  * the response body finishes (identity when no concurrency limit configured).
  */
-export async function enforceKeyPolicy(apiKeyValue, provider = null) {
+export async function enforceKeyPolicy(apiKeyValue, provider = null, { skipBudget = false } = {}) {
   if (!apiKeyValue) return { ok: true, policy: null, wrap: (r) => r };
   const policy = await getPolicyForApiKey(apiKeyValue);
   if (!policy) return { ok: true, policy: null, wrap: (r) => r };
 
-  const providerId = await resolveProvider(provider);
-  const budgetResult = await checkBudget(apiKeyValue, policy, providerId);
-  if (!budgetResult.ok) {
-    return { ok: false, response: policyErrorResponse(budgetResult), policy };
+  if (!skipBudget) {
+    const providerId = await resolveProvider(provider);
+    const budgetResult = await checkBudget(apiKeyValue, policy, providerId);
+    if (!budgetResult.ok) {
+      return { ok: false, response: policyErrorResponse(budgetResult), policy };
+    }
   }
 
   const slot = acquireSlot(apiKeyValue, policy);
@@ -562,7 +567,9 @@ export async function checkProviderBudgetResponse(apiKeyValue, provider) {
 
 /**
  * Evaluate a resolved provider attempt against matching provider or wildcard
- * budgets. Unknown costs fail closed only when such a budget exists.
+ * budgets when the USD cost is known up front (search/fetch costPerQuery).
+ * Unknown costs fail closed only when such a budget exists — image/TTS/STT
+ * should use checkProviderBudgetResponse instead.
  */
 export async function evaluateProviderBudget(apiKeyValue, provider, { costUsd, operation = "request" } = {}) {
   const noopRelease = () => {};
