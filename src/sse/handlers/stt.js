@@ -10,7 +10,7 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import * as log from "../utils/logger.js";
-import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
+import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 // Providers requiring credentials for STT
 const CREDENTIALED_PROVIDERS = new Set(
@@ -77,8 +77,8 @@ async function handleSttInner(formData, modelStr, apiKey) {
 
   log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
 
-  const budgetPolicy = await evaluateProviderBudget(apiKey, provider, { operation: "speech-to-text" });
-  if (budgetPolicy.rejectionResponse) return budgetPolicy.rejectionResponse;
+  const budgetReject = await checkProviderBudgetResponse(apiKey, provider);
+  if (budgetReject) return budgetReject;
 
   const modelTransport = await resolveCustomModelTransport(provider, model);
 
