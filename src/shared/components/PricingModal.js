@@ -223,7 +223,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
                 <p className="font-medium mb-1 text-text-main">Pricing Rates Format</p>
                 <p className="text-text-muted">
                   All rates are in <strong>dollars per million tokens</strong> ($/1M tokens).
-                  Models you add on a provider page (for example Codex <code>gpt-6-astra</code>) show up under that provider&apos;s alias (<code>cx</code>). You can also add any provider/model below.
+                  Models you add on a provider page (for example Codex <code>my-codex-finetune</code>) show up under that provider&apos;s alias (<code>cx</code>). You can also add any provider/model below.
                 </p>
               </div>
 
