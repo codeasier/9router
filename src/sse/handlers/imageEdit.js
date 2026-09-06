@@ -71,8 +71,8 @@ export async function handleImageEdit(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  // Per-key policy guard (entry)
-  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  // Image edit is exempt from budgets and breakers; concurrency still applies.
+  const policyGuard = await enforceKeyPolicy(apiKey, null, { skipBudget: true });
   if (!policyGuard.ok) return policyGuard.response;
 
   const contentLength = Number(request.headers.get("content-length"));

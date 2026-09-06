@@ -16,7 +16,7 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
-import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
+import { enforceKeyPolicy } from "../services/keyPolicy.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web"]);
@@ -67,8 +67,8 @@ export async function handleImageGeneration(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  // Per-key policy guard (entry)
-  const policyGuard = await enforceKeyPolicy(apiKey, null);
+  // Image generation is exempt from budgets and breakers; concurrency still applies.
+  const policyGuard = await enforceKeyPolicy(apiKey, null, { skipBudget: true });
   if (!policyGuard.ok) return policyGuard.response;
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
@@ -111,18 +111,13 @@ export async function handleImageGeneration(request) {
  * @param {string} [options.apiKey]
  * @param {string} [options.endpoint]
  * @param {string} [options.operation] - "generation" (default) or "edit"
- * @param {string} [options.apiKey] - client API key for per-provider budget checks
+ * @param {string} [options.apiKey] - client API key (image gen does not apply budgets)
  */
 export async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, operation = "generation", apiKey = null, endpoint } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
-
-  const budgetPolicy = await evaluateProviderBudget(apiKey, provider, {
-    operation: operation === "edit" ? "image edit" : "image generation",
-  });
-  if (budgetPolicy.rejectionResponse) return budgetPolicy.rejectionResponse;
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
