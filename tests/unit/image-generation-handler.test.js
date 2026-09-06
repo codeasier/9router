@@ -47,7 +47,7 @@ vi.mock("@/sse/utils/logger.js", () => loggerMocks);
 vi.mock("open-sse/handlers/imageGenerationCore.js", () => coreMocks);
 
 import { handleImageGeneration } from "@/sse/handlers/imageGeneration.js";
-import { _resetKeyPolicyState } from "@/sse/services/keyPolicy.js";
+import { _resetKeyPolicyState, _setBudgetQuery } from "@/sse/services/keyPolicy.js";
 
 const stepPlanModel = "step-plan/step-image-edit-2";
 
@@ -70,6 +70,7 @@ function connection(connectionId = "step-connection-1") {
 beforeEach(() => {
   vi.resetAllMocks();
   _resetKeyPolicyState();
+  _setBudgetQuery(null);
   settingsMocks.getSettings.mockResolvedValue({ requireApiKey: false });
   settingsMocks.getApiKeyByKey.mockResolvedValue(null);
   authMocks.extractApiKey.mockReturnValue(null);
@@ -108,19 +109,49 @@ describe("handleImageGeneration", () => {
     expect(authMocks.getProviderCredentials).not.toHaveBeenCalled();
   });
 
-  it("fails closed before an unpriced image attempt when its provider budget matches", async () => {
+  it("allows image generation when the provider budget is not yet exhausted", async () => {
     authMocks.extractApiKey.mockReturnValue("budgeted-client-key");
     settingsMocks.getApiKeyByKey.mockResolvedValue({
-      policy: { budgets: [{ provider: "step-plan", limitUsd: 5, period: "day" }] },
+      policy: { budgets: [{ provider: "codex", limitUsd: 5, period: "day" }] },
     });
+    modelMocks.getModelInfo.mockResolvedValue({ provider: "codex", model: "gpt-5.5-image" });
+    _setBudgetQuery(async () => 1.25);
+    const upstreamResponse = Response.json({ data: [{ url: "https://example.com/image.png" }] });
+    coreMocks.handleImageGenerationCore.mockResolvedValue({ success: true, response: upstreamResponse });
 
-    const response = await handleImageGeneration(makeRequest({ model: stepPlanModel, prompt: "sunrise" }));
-    const payload = await response.json();
+    const response = await handleImageGeneration(makeRequest({
+      model: "codex/gpt-5.5-image",
+      prompt: "sunrise",
+    }));
 
-    expect(response.status).toBe(403);
-    expect(payload.error.code).toBe("policy_violation");
-    expect(authMocks.getProviderCredentials).not.toHaveBeenCalled();
-    expect(coreMocks.handleImageGenerationCore).not.toHaveBeenCalled();
+    expect(response).toBe(upstreamResponse);
+    expect(coreMocks.handleImageGenerationCore).toHaveBeenCalled();
+  });
+
+  it("allows image generation even when the key breaker is open", async () => {
+    const apiKey = "budgeted-client-key";
+    authMocks.extractApiKey.mockReturnValue(apiKey);
+    settingsMocks.getApiKeyByKey.mockResolvedValue({
+      policy: { budgets: [{ provider: "antigravity", limitUsd: 5, period: "day" }] },
+    });
+    modelMocks.getModelInfo.mockResolvedValue({ provider: "antigravity", model: "gemini-3.1-flash-image" });
+    _setBudgetQuery(async () => 100);
+    const { checkBudget } = await import("@/sse/services/keyPolicy.js");
+    const tripped = await checkBudget(apiKey, {
+      budgets: [{ provider: "antigravity", limitUsd: 5, period: "day" }],
+    }, "antigravity");
+    expect(tripped.ok).toBe(false);
+
+    const upstreamResponse = Response.json({ data: [{ url: "https://example.com/image.png" }] });
+    coreMocks.handleImageGenerationCore.mockResolvedValue({ success: true, response: upstreamResponse });
+
+    const response = await handleImageGeneration(makeRequest({
+      model: "antigravity/gemini-3.1-flash-image",
+      prompt: "sunrise",
+    }));
+
+    expect(response).toBe(upstreamResponse);
+    expect(coreMocks.handleImageGenerationCore).toHaveBeenCalled();
   });
 
   it("passes the preferred Step Plan connection to credential selection", async () => {
