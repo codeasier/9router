@@ -460,9 +460,11 @@ export async function getKeyPolicyStatus(apiKeyValue, { skipCache = false } = {}
 
   const usage = {};
   const usageResetMs = {};
+  const usageStartMs = {};
   for (const period of ["day", "week", "month"]) {
     const [startMs, endMs] = periodWindowMs(period, now);
     usage[period] = Math.round((await getSpentUsd(apiKeyValue, "*", startMs, endMs, now) + Number.EPSILON) * 1e6) / 1e6;
+    usageStartMs[period] = startMs;
     usageResetMs[period] = endMs;
   }
 
@@ -472,6 +474,7 @@ export async function getKeyPolicyStatus(apiKeyValue, { skipCache = false } = {}
     inflight: state.inflight.get(apiKeyValue) || 0,
     budgets,
     usage,
+    usageStartMs,
     usageResetMs,
     breaker: keyBreaker ? { scope: "key", untilMs: keyBreaker.untilMs, reason: keyBreaker.reason } : null,
     providerBreakers,

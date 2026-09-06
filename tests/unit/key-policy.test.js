@@ -423,6 +423,9 @@ describe("getKeyPolicyStatus", () => {
     expect(st.inflight).toBe(0);
     expect(st.budgets).toEqual([]);
     expect(st.usage.day).toBe(1.25);
+    expect(st.usageStartMs.day).toBe(keyPolicy.periodWindowMs("day")[0]);
+    expect(st.usageStartMs.week).toBe(keyPolicy.periodWindowMs("week")[0]);
+    expect(st.usageStartMs.month).toBe(keyPolicy.periodWindowMs("month")[0]);
     expect(st.usageResetMs.day).toBe(keyPolicy.periodWindowMs("day")[1]);
     expect(st.usageResetMs.week).toBe(keyPolicy.periodWindowMs("week")[1]);
     expect(st.usageResetMs.month).toBe(keyPolicy.periodWindowMs("month")[1]);
