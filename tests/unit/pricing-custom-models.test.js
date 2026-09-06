@@ -36,9 +36,9 @@ describe("pricing editor helpers", () => {
   it("seeds a Codex custom model under the cx alias", () => {
     const merged = {};
     mergeCustomModelsIntoPricing(merged, [
-      { providerAlias: "cx", id: "gpt-6-astra", name: "GPT 6 Astra" },
+      { providerAlias: "cx", id: "my-codex-finetune", name: "My Codex Finetune" },
     ], () => null);
-    expect(merged.cx["gpt-6-astra"]).toEqual(EMPTY_RATES);
+    expect(merged.cx["my-codex-finetune"]).toEqual(EMPTY_RATES);
   });
 
   it("labels Codex by name and alias", () => {
@@ -122,15 +122,15 @@ describe("pricing repo includes custom models", () => {
     expect(await db.getPricingForModel("claude", "my-finetune")).toMatchObject({ input: 7, output: 21 });
   });
 
-  it("prices a custom Codex model added as cx/gpt-6-astra", async () => {
-    await db.addCustomModel({ providerAlias: "cx", id: "gpt-6-astra", name: "GPT 6 Astra" });
+  it("prices a custom Codex model added as cx/my-codex-finetune", async () => {
+    await db.addCustomModel({ providerAlias: "cx", id: "my-codex-finetune", name: "My Codex Finetune" });
     const pricing = await db.getPricing();
-    expect(pricing.cx["gpt-6-astra"]).toMatchObject(EMPTY_RATES);
+    expect(pricing.cx["my-codex-finetune"]).toMatchObject(EMPTY_RATES);
 
     await db.updatePricing({
-      cx: { "gpt-6-astra": { input: 4, output: 16, cached: 0.4, reasoning: 16, cache_creation: 4 } },
+      cx: { "my-codex-finetune": { input: 4, output: 16, cached: 0.4, reasoning: 16, cache_creation: 4 } },
     });
-    expect(await db.getPricingForModel("cx", "gpt-6-astra")).toMatchObject({ input: 4, output: 16 });
-    expect(await db.getPricingForModel("codex", "gpt-6-astra")).toMatchObject({ input: 4, output: 16 });
+    expect(await db.getPricingForModel("cx", "my-codex-finetune")).toMatchObject({ input: 4, output: 16 });
+    expect(await db.getPricingForModel("codex", "my-codex-finetune")).toMatchObject({ input: 4, output: 16 });
   });
 });
