@@ -12,6 +12,9 @@
 - **i18n**: complete Indonesian translation (1391 keys)
 
 ## Fixes
+- **API Keys**: policy editor hydrates from the key's current budgets, concurrency, and breaker instead of an empty form
+- **API Keys**: show UTC refresh times for daily / weekly / monthly budget windows (midnight, Monday, 1st)
+- **API Keys**: one-click and multi-select clear of all key limits (policy + breaker), with confirm
 - **UI**: mount Pricing in the dashboard System menu and route group so custom rates are reachable from the sidebar (#16); include custom models in the editor and allow adding any provider/model
 - **Security**: close SSRF guard bypasses in `ssrfGuard.js` (alternate IPv6 encodings, hostname trailing dots, wildcard DNS resolution check, safe redirect handling) (#3714)
 - **Model markers**: strip the `[1m]` context marker Claude Code appends to model names (`claude-opus-5[1m]`) preventing model resolution failures (#3690)
