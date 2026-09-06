@@ -406,7 +406,9 @@ describe("getKeyPolicyStatus", () => {
     expect(st.inflight).toBe(2);
     expect(st.budgets).toHaveLength(1);
     expect(st.budgets[0]).toMatchObject({ provider: "codex", period: "day", limitUsd: 5, spentUsd: 2 });
+    expect(st.budgets[0].windowEndMs).toBeGreaterThan(st.budgets[0].windowStartMs);
     expect(st.usage).toMatchObject({ day: 3.5, week: 3.5, month: 3.5 });
+    expect(st.usageResetMs.day).toBe(st.budgets[0].windowEndMs);
     expect(st.breaker).toBeNull();
     expect(st.providerBreakers).toEqual([]);
   });
@@ -421,6 +423,9 @@ describe("getKeyPolicyStatus", () => {
     expect(st.inflight).toBe(0);
     expect(st.budgets).toEqual([]);
     expect(st.usage.day).toBe(1.25);
+    expect(st.usageResetMs.day).toBe(keyPolicy.periodWindowMs("day")[1]);
+    expect(st.usageResetMs.week).toBe(keyPolicy.periodWindowMs("week")[1]);
+    expect(st.usageResetMs.month).toBe(keyPolicy.periodWindowMs("month")[1]);
   });
 
   it("surfaces open key and provider breakers", async () => {

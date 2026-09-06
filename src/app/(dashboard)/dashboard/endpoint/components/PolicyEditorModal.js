@@ -5,8 +5,7 @@ import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers.js";
 import { translate } from "@/i18n/runtime";
-
-const PERIOD_LABELS = { day: "daily", week: "weekly", month: "monthly" };
+import { PERIOD_LABELS, UTC_WINDOW_RULE, formatRefreshAt, policyToFormState } from "../budgetWindow.js";
 
 const PROVIDER_OPTIONS = Object.values(AI_PROVIDERS)
   .filter((p) => !p.hidden)
@@ -20,16 +19,32 @@ const PROVIDER_OPTIONS = Object.values(AI_PROVIDERS)
  * policy shape: { budgets: [{provider, limitUsd, period}], maxConcurrent, breaker: {mode, durationMinutes} }
  */
 export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSaved, onReset }) {
-  const [budgets, setBudgets] = useState(() => initBudgets(apiKeyRecord?.policy));
-  const [maxConcurrent, setMaxConcurrent] = useState(apiKeyRecord?.policy?.maxConcurrent?.toString() || "");
-  const [breakerMode, setBreakerMode] = useState(apiKeyRecord?.policy?.breaker?.mode || "fixed");
-  const [breakerMinutes, setBreakerMinutes] = useState(
-    apiKeyRecord?.policy?.breaker?.durationMinutes?.toString() || "5"
-  );
+  const initialForm = policyToFormState(apiKeyRecord?.policy);
+  const [budgets, setBudgets] = useState(initialForm.budgets);
+  const [maxConcurrent, setMaxConcurrent] = useState(initialForm.maxConcurrent);
+  const [breakerMode, setBreakerMode] = useState(initialForm.breakerMode);
+  const [breakerMinutes, setBreakerMinutes] = useState(initialForm.breakerMinutes);
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(null);
+
+  const recordId = apiKeyRecord?.id || "";
+  const policySnapshot = JSON.stringify(apiKeyRecord?.policy ?? null);
+
+  // Modal stays mounted on the endpoint page; re-hydrate when opened or the key changes.
+  useEffect(() => {
+    if (!isOpen) return;
+    const form = policyToFormState(policySnapshot ? JSON.parse(policySnapshot) : null);
+    setBudgets(form.budgets);
+    setMaxConcurrent(form.maxConcurrent);
+    setBreakerMode(form.breakerMode);
+    setBreakerMinutes(form.breakerMinutes);
+    setError(null);
+    setSaving(false);
+    setClearing(false);
+  }, [isOpen, recordId, policySnapshot]);
 
   // Live status polling: in-flight count, budget spend, open breakers.
   const fetchStatus = useCallback(async () => {
@@ -66,6 +81,30 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
       setError(e.message || "Failed to reset");
     } finally {
       setResetting(false);
+    }
+  };
+
+  const handleClearPolicy = async () => {
+    if (!apiKeyRecord?.id || clearing || saving) return;
+    setClearing(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/keys/${apiKeyRecord.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ policy: null }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Failed to clear policy");
+        return;
+      }
+      onSaved?.(data.key);
+      onClose();
+    } catch (e) {
+      setError(e.message || "Failed to clear policy");
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -153,11 +192,22 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
               {!status.maxConcurrent && <span className="text-xs text-text-muted">(no limit)</span>}
             </div>
             {/* Usage (all providers) */}
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-text-muted w-24 shrink-0">Spend (UTC)</span>
-              <span className="font-mono text-xs text-text-main">
-                {translate("today")} ${fmtUsd(status.usage?.day)} · {translate("week")} ${fmtUsd(status.usage?.week)} · {translate("month")} ${fmtUsd(status.usage?.month)}
-              </span>
+            <div className="flex flex-col gap-1 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted w-24 shrink-0">Spend (UTC)</span>
+                <span className="font-mono text-xs text-text-main">
+                  {translate("today")} ${fmtUsd(status.usage?.day)} · {translate("week")} ${fmtUsd(status.usage?.week)} · {translate("month")} ${fmtUsd(status.usage?.month)}
+                </span>
+              </div>
+              {(status.usageResetMs?.day || status.usageResetMs?.week || status.usageResetMs?.month) && (
+                <p className="pl-[6.5rem] text-[11px] text-text-muted font-mono leading-relaxed">
+                  {translate("today")} {translate("resets")} {formatRefreshAt(status.usageResetMs.day)}
+                  <br />
+                  {translate("week")} {translate("resets")} {formatRefreshAt(status.usageResetMs.week)}
+                  <br />
+                  {translate("month")} {translate("resets")} {formatRefreshAt(status.usageResetMs.month)}
+                </p>
+              )}
             </div>
             {/* Budget windows */}
             {status.budgets?.length > 0 && status.budgets.map((b, i) => {
@@ -173,6 +223,11 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
                       ${fmtUsd(b.spentUsd)} / ${fmtUsd(b.limitUsd)}
                     </span>
                   </div>
+                  {Number.isFinite(b.windowEndMs) && (
+                    <p className="text-[11px] text-text-muted font-mono">
+                      {translate("resets")} {formatRefreshAt(b.windowEndMs)}
+                    </p>
+                  )}
                   <div className="h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
                     <div
                       className={`h-full rounded-full ${over ? "bg-red-500" : pct >= 80 ? "bg-amber-500" : "bg-primary"}`}
@@ -232,6 +287,7 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
             <p className="text-sm font-medium">Provider Budgets (USD / period, UTC)</p>
             <Button size="sm" icon="add" onClick={addBudget}>Add</Button>
           </div>
+          <p className="text-xs text-text-muted mb-2">{translate(UTC_WINDOW_RULE)}</p>
           {budgets.length === 0 && (
             <p className="text-xs text-text-muted">No budgets — unlimited spend. Example: provider "codex", $5 per day.</p>
           )}
@@ -333,22 +389,20 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
 
         {error && <p className="text-sm text-red-500">{error}</p>}
 
-        <div className="flex gap-2 justify-end">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSave} disabled={saving}>{saving ? translate("Saving…") : translate("Save Policy")}</Button>
+        <div className="flex gap-2 justify-between items-center">
+          {apiKeyRecord.policy ? (
+            <Button variant="ghost" onClick={handleClearPolicy} disabled={saving || clearing} icon="lock_open">
+              {clearing ? translate("Clearing…") : translate("Clear all limits")}
+            </Button>
+          ) : <span />}
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saving || clearing}>{saving ? translate("Saving…") : translate("Save Policy")}</Button>
+          </div>
         </div>
       </div>
     </Modal>
   );
-}
-
-function initBudgets(policy) {
-  if (!policy?.budgets?.length) return [];
-  return policy.budgets.map((b) => ({
-    provider: b.provider || "*",
-    limitUsd: String(b.limitUsd ?? ""),
-    period: b.period || "day",
-  }));
 }
 
 function fmtUsd(v) {
