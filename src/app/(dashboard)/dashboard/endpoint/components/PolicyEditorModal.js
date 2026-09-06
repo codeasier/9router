@@ -5,7 +5,13 @@ import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers.js";
 import { translate } from "@/i18n/runtime";
-import { PERIOD_LABELS, UTC_WINDOW_RULE, formatRefreshAt, policyToFormState } from "../budgetWindow.js";
+import {
+  PERIOD_ALL_LABELS,
+  UTC_WINDOW_RULE,
+  buildSpendHierarchy,
+  formatPeriodWindow,
+  policyToFormState,
+} from "../budgetWindow.js";
 
 const PROVIDER_OPTIONS = Object.values(AI_PROVIDERS)
   .filter((p) => !p.hidden)
@@ -191,52 +197,7 @@ export default function PolicyEditorModal({ isOpen, apiKeyRecord, onClose, onSav
               )}
               {!status.maxConcurrent && <span className="text-xs text-text-muted">(no limit)</span>}
             </div>
-            {/* Usage (all providers) */}
-            <div className="flex flex-col gap-1 text-sm">
-              <div className="flex items-center gap-2">
-                <span className="text-text-muted w-24 shrink-0">Spend (UTC)</span>
-                <span className="font-mono text-xs text-text-main">
-                  {translate("today")} ${fmtUsd(status.usage?.day)} · {translate("week")} ${fmtUsd(status.usage?.week)} · {translate("month")} ${fmtUsd(status.usage?.month)}
-                </span>
-              </div>
-              {(status.usageResetMs?.day || status.usageResetMs?.week || status.usageResetMs?.month) && (
-                <p className="pl-[6.5rem] text-[11px] text-text-muted font-mono leading-relaxed">
-                  {translate("today")} {translate("resets")} {formatRefreshAt(status.usageResetMs.day)}
-                  <br />
-                  {translate("week")} {translate("resets")} {formatRefreshAt(status.usageResetMs.week)}
-                  <br />
-                  {translate("month")} {translate("resets")} {formatRefreshAt(status.usageResetMs.month)}
-                </p>
-              )}
-            </div>
-            {/* Budget windows */}
-            {status.budgets?.length > 0 && status.budgets.map((b, i) => {
-              const pct = Math.min(100, (b.spentUsd / b.limitUsd) * 100);
-              const over = b.spentUsd >= b.limitUsd;
-              return (
-                <div key={i} className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-mono">
-                      {b.provider === "*" ? translate("all providers") : b.provider} / {translate(PERIOD_LABELS[b.period] || b.period)}
-                    </span>
-                    <span className={`font-mono ${over ? "text-red-500" : pct >= 80 ? "text-amber-500" : "text-text-muted"}`}>
-                      ${fmtUsd(b.spentUsd)} / ${fmtUsd(b.limitUsd)}
-                    </span>
-                  </div>
-                  {Number.isFinite(b.windowEndMs) && (
-                    <p className="text-[11px] text-text-muted font-mono">
-                      {translate("resets")} {formatRefreshAt(b.windowEndMs)}
-                    </p>
-                  )}
-                  <div className="h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${over ? "bg-red-500" : pct >= 80 ? "bg-amber-500" : "bg-primary"}`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+            <SpendHierarchy status={status} />
             {/* Open breakers */}
             {(status.breaker || status.providerBreakers?.length > 0) && (
               <div className="flex flex-col gap-2">
@@ -409,6 +370,90 @@ function fmtUsd(v) {
   if (v == null || !Number.isFinite(v)) return "0";
   return v >= 100 ? v.toFixed(0) : v.toFixed(2);
 }
+
+function budgetProviderLabel(provider) {
+  if (provider === "*") return translate("all providers");
+  const named = PROVIDER_OPTIONS.find((p) => p.id === provider);
+  return named?.name ? `${named.name} (${provider})` : provider;
+}
+
+function BudgetProgress({ spentUsd, limitUsd }) {
+  const pct = Math.min(100, (spentUsd / limitUsd) * 100);
+  const over = spentUsd >= limitUsd;
+  return (
+    <div className="h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+      <div
+        className={`h-full rounded-full ${over ? "bg-red-500" : pct >= 80 ? "bg-amber-500" : "bg-primary"}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+function SpendHierarchy({ status }) {
+  const rows = buildSpendHierarchy(status);
+  return (
+    <div className="flex flex-col gap-3 text-sm">
+      <span className="text-text-muted">Spend (UTC)</span>
+      {rows.map((row) => {
+        const hasChildren = row.rules.length > 0 || row.otherUsd != null;
+        return (
+          <div key={row.period} className="flex flex-col gap-1">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-text-main">{translate(PERIOD_ALL_LABELS[row.period])}</span>
+              <span className="font-mono text-text-main">${fmtUsd(row.totalUsd)}</span>
+            </div>
+            <p className="text-[11px] text-text-muted font-mono leading-relaxed">
+              {formatPeriodWindow(row.period, row.startMs, row.endMs)}
+              {row.prevMonthOverlap && (
+                <>
+                  <br />
+                  {translate("includes previous month")} {row.prevMonthOverlap}
+                </>
+              )}
+            </p>
+            {hasChildren && (
+              <div className="ml-1 pl-3 border-l border-border/70 flex flex-col gap-1.5">
+                {row.rules.map((b, i) => {
+                  const pct = Math.min(100, (b.spentUsd / b.limitUsd) * 100);
+                  const over = b.spentUsd >= b.limitUsd;
+                  return (
+                    <div key={`${b.provider}-${b.period}-${i}`} className="flex flex-col gap-1">
+                      <div className="flex items-baseline justify-between gap-3 text-xs">
+                        <span className="font-mono text-text-muted">
+                          {budgetProviderLabel(b.provider)} ({translate("budget")})
+                        </span>
+                        <span className={`font-mono shrink-0 ${over ? "text-red-500" : pct >= 80 ? "text-amber-500" : "text-text-muted"}`}>
+                          ${fmtUsd(b.spentUsd)} / ${fmtUsd(b.limitUsd)}
+                        </span>
+                      </div>
+                      <BudgetProgress spentUsd={b.spentUsd} limitUsd={b.limitUsd} />
+                    </div>
+                  );
+                })}
+                {row.otherUsd != null && (
+                  <div className="flex items-baseline justify-between gap-3 text-xs text-text-muted">
+                    <span>{translate("other providers")} ({translate("no budget")})</span>
+                    <span className="font-mono shrink-0">${fmtUsd(row.otherUsd)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+BudgetProgress.propTypes = {
+  spentUsd: PropTypes.number,
+  limitUsd: PropTypes.number,
+};
+
+SpendHierarchy.propTypes = {
+  status: PropTypes.object,
+};
 
 PolicyEditorModal.propTypes = {
   isOpen: PropTypes.bool.isRequired,
