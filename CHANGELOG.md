@@ -60,6 +60,7 @@
 - **i18n**: complete Indonesian translation (1391 keys)
 
 ## Fixes
+- **API Keys**: exempt image generation and edit from budgets and circuit breakers (concurrency still applies); TTS / STT use the same spend-check as chat instead of a 403 policy_violation
 - **API Keys**: policy editor hydrates from the key's current budgets, concurrency, and breaker instead of an empty form
 - **API Keys**: show UTC refresh times for daily / weekly / monthly budget windows (midnight, Monday, 1st)
 - **API Keys**: one-click and multi-select clear of all key limits (policy + breaker), with confirm
