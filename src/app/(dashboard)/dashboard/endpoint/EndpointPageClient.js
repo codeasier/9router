@@ -19,6 +19,8 @@ import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import PolicyEditorModal from "./components/PolicyEditorModal";
 import BulkPolicyEditorModal from "./components/BulkPolicyEditorModal";
+import { translate } from "@/i18n/runtime";
+import { PERIOD_LABELS, UTC_WINDOW_RULE, formatRefreshAt } from "./budgetWindow.js";
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -30,6 +32,7 @@ export default function APIPageClient({ machineId }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkEditorOpen, setBulkEditorOpen] = useState(false);
   const [bulkResetting, setBulkResetting] = useState(false);
+  const [bulkClearing, setBulkClearing] = useState(false);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -729,6 +732,7 @@ export default function APIPageClient({ machineId }) {
 
   const handlePolicySaved = (updatedKey) => {
     setKeys(prev => prev.map(k => (k.id === updatedKey.id ? { ...k, policy: updatedKey.policy } : k)));
+    if (updatedKey?.id) handlePolicyReset(updatedKey.id);
   };
 
   const handlePolicyReset = async (id, newStatus) => {
@@ -796,6 +800,41 @@ export default function APIPageClient({ machineId }) {
     } catch (e) { console.log("Reset failed:", e); }
   };
 
+  const handleClearLimits = (ids) => {
+    const uniqueIds = [...new Set(ids)].filter(Boolean);
+    if (uniqueIds.length === 0 || bulkClearing) return;
+    const single = uniqueIds.length === 1;
+    setConfirmState({
+      title: translate("Clear all limits"),
+      message: single
+        ? translate("Remove all budget, concurrency, and breaker limits from this key? It will be unrestricted.")
+        : translate("Remove all budget, concurrency, and breaker limits from the selected keys? They will be unrestricted."),
+      confirmText: translate("Clear all limits"),
+      onConfirm: async () => {
+        setConfirmState(null);
+        setBulkClearing(true);
+        try {
+          const res = await fetch("/api/keys/bulk/policy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: uniqueIds, policy: null }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            if (policyEditorKey && uniqueIds.includes(policyEditorKey.id)) {
+              setPolicyEditorKey(null);
+            }
+            handleBulkPolicySaved(data.results);
+          }
+        } catch (e) {
+          console.log("Clear limits failed:", e);
+        } finally {
+          setBulkClearing(false);
+        }
+      },
+    });
+  };
+
   const handleBulkPolicySaved = (results) => {
     if (!Array.isArray(results)) return;
     const policyById = new Map();
@@ -822,7 +861,7 @@ export default function APIPageClient({ machineId }) {
     if (!policy) return null;
     const parts = [];
     if (policy.budgets?.length) {
-      parts.push(...policy.budgets.map(b => `${b.provider === "*" ? "all" : b.provider}: $${b.limitUsd}/${b.period}`));
+      parts.push(...policy.budgets.map(b => `${b.provider === "*" ? "all" : b.provider}: $${b.limitUsd}/${PERIOD_LABELS[b.period] || b.period}`));
     }
     if (policy.maxConcurrent) parts.push(`≤${policy.maxConcurrent} concurrent`);
     return parts.join(" · ");
@@ -1160,8 +1199,11 @@ export default function APIPageClient({ machineId }) {
             </label>
             {selectedIds.size > 0 ? (
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleBulkReset} disabled={bulkResetting}>
+                <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleBulkReset} disabled={bulkResetting || bulkClearing}>
                   {bulkResetting ? "Resetting…" : `Reset (${selectedIds.size})`}
+                </Button>
+                <Button size="sm" variant="secondary" icon="lock_open" onClick={() => handleClearLimits(Array.from(selectedIds))} disabled={bulkClearing || bulkResetting}>
+                  {bulkClearing ? translate("Clearing…") : `${translate("Clear limits")} (${selectedIds.size})`}
                 </Button>
                 <Button size="sm" icon="tune" onClick={() => setBulkEditorOpen(true)}>
                   Bulk Edit ({selectedIds.size})
@@ -1171,9 +1213,13 @@ export default function APIPageClient({ machineId }) {
                 </button>
               </div>
             ) : (
-              <span className="text-xs text-text-muted">Tick keys to bulk edit policy or reset quota</span>
+              <span className="text-xs text-text-muted">{translate("Tick keys to bulk edit policy, reset quota, or clear limits")}</span>
             )}
           </div>
+        )}
+
+        {keys.length > 0 && (
+          <p className="text-[11px] text-text-muted mb-2 px-1">{translate(UTC_WINDOW_RULE)}</p>
         )}
 
         {keys.length === 0 ? (
@@ -1242,28 +1288,33 @@ export default function APIPageClient({ machineId }) {
                     </p>
                   )}
                   {st && (
-                    <p className={`text-xs mt-1 flex items-center gap-2 flex-wrap ${breakerOpen ? "text-red-500" : "text-text-muted"}`}>
-                      {breakerOpen && (
-                        <span className="inline-flex items-center gap-1">
-                          <span className="material-symbols-outlined text-[12px]">block</span>
-                          breaker open
-                        </span>
-                      )}
-                      {st.maxConcurrent ? (
-                        <span className={st.inflight >= st.maxConcurrent ? "text-red-500" : undefined}>
-                          {st.inflight}/{st.maxConcurrent} in-flight
-                        </span>
-                      ) : st.inflight > 0 ? (
-                        <span>{st.inflight} in-flight</span>
-                      ) : null}
-                      <span>today ${fmtStatusUsd(st.usage?.day)}</span>
-                      <span>week ${fmtStatusUsd(st.usage?.week)}</span>
-                      {st.budgets?.length > 0 && (
-                        <span>
-                          {st.budgets.map((b) => `${b.provider === "*" ? "all" : b.provider}: $${fmtStatusUsd(b.spentUsd)}/${fmtStatusUsd(b.limitUsd)} ${b.period}`).join(" · ")}
-                        </span>
-                      )}
-                    </p>
+                    <div className={`text-xs mt-1 flex flex-col gap-0.5 ${breakerOpen ? "text-red-500" : "text-text-muted"}`}>
+                      <p className="flex items-center gap-2 flex-wrap">
+                        {breakerOpen && (
+                          <span className="inline-flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[12px]">block</span>
+                            breaker open
+                          </span>
+                        )}
+                        {st.maxConcurrent ? (
+                          <span className={st.inflight >= st.maxConcurrent ? "text-red-500" : undefined}>
+                            {st.inflight}/{st.maxConcurrent} in-flight
+                          </span>
+                        ) : st.inflight > 0 ? (
+                          <span>{st.inflight} in-flight</span>
+                        ) : null}
+                        <span>today ${fmtStatusUsd(st.usage?.day)}</span>
+                        <span>week ${fmtStatusUsd(st.usage?.week)}</span>
+                      </p>
+                      {st.budgets?.length > 0 && st.budgets.map((b, i) => (
+                        <p key={i} className="font-mono">
+                          {b.provider === "*" ? "all" : b.provider}: ${fmtStatusUsd(b.spentUsd)}/${fmtStatusUsd(b.limitUsd)} {translate(PERIOD_LABELS[b.period] || b.period)}
+                          {Number.isFinite(b.windowEndMs) && (
+                            <span className="text-text-muted"> · {translate("resets")} {formatRefreshAt(b.windowEndMs)}</span>
+                          )}
+                        </p>
+                      ))}
+                    </div>
                   )}
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
@@ -1277,6 +1328,15 @@ export default function APIPageClient({ machineId }) {
                   >
                     <span className="material-symbols-outlined text-[18px]">tune</span>
                   </button>
+                  {key.policy && (
+                    <button
+                      onClick={() => handleClearLimits([key.id])}
+                      className="p-2 rounded hover:bg-primary/10 text-text-muted hover:text-primary transition-colors"
+                      title={translate("Clear all limits")}
+                    >
+                      <span className="material-symbols-outlined text-[18px]">lock_open</span>
+                    </button>
+                  )}
                   {breakerOpen && (
                     <button
                       onClick={() => handleSingleReset(key.id)}
@@ -1321,6 +1381,7 @@ export default function APIPageClient({ machineId }) {
 
       {/* Policy Editor Modal */}
       <PolicyEditorModal
+        key={policyEditorKey?.id || "closed"}
         isOpen={!!policyEditorKey}
         apiKeyRecord={policyEditorKey}
         onClose={() => setPolicyEditorKey(null)}
@@ -1557,6 +1618,7 @@ export default function APIPageClient({ machineId }) {
         onConfirm={confirmState?.onConfirm}
         title={confirmState?.title || "Confirm"}
         message={confirmState?.message}
+        confirmText={confirmState?.confirmText}
         variant="danger"
       />
     </div>

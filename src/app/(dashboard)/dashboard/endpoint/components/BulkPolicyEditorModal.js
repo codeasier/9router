@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers.js";
 import { translate } from "@/i18n/runtime";
+import { UTC_WINDOW_RULE } from "../budgetWindow.js";
 
 const PROVIDER_OPTIONS = Object.values(AI_PROVIDERS)
   .filter((p) => !p.hidden)
@@ -140,6 +141,7 @@ export default function BulkPolicyEditorModal({ isOpen, selectedIds, keys, onClo
             <p className="text-sm font-medium">Provider Budgets (USD / period, UTC)</p>
             <Button size="sm" icon="add" onClick={addBudget}>Add</Button>
           </div>
+          <p className="text-xs text-text-muted mb-2">{translate(UTC_WINDOW_RULE)}</p>
           {budgets.length === 0 && (
             <p className="text-xs text-text-muted">No budgets — unlimited spend. Example: provider &quot;codex&quot;, $5 per day. Leave empty and save to clear budgets (keep concurrency/breaker if set).</p>
           )}
