@@ -447,3 +447,19 @@ describe("getKeyPolicyStatus", () => {
     expect(st.providerBreakers[0].reason).toContain("budget exceeded");
   });
 });
+
+describe("enforceKeyPolicy skipBudget", () => {
+  it("rejects an open breaker by default and allows the same key when skipBudget is set", async () => {
+    mockKeyRecord = { policy: { budgets: [{ provider: "*", limitUsd: 1, period: "day" }] } };
+    keyPolicy._setBudgetQuery(async () => 100);
+    await keyPolicy.checkBudget(KEY, mockKeyRecord.policy, "codex");
+
+    const blocked = await keyPolicy.enforceKeyPolicy(KEY, "codex");
+    expect(blocked.ok).toBe(false);
+    expect(blocked.response.status).toBe(429);
+
+    const allowed = await keyPolicy.enforceKeyPolicy(KEY, "codex", { skipBudget: true });
+    expect(allowed.ok).toBe(true);
+    expect(allowed.wrap).toEqual(expect.any(Function));
+  });
+});
