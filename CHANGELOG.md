@@ -10,6 +10,7 @@
 - **Gemini**: persist and replay `thoughtSignature` scoped by session namespace
 
 ## Fixes
+- **Codex**: bump CLI fingerprint to 0.153.2 so gpt-5.6 / gpt-6-astra image and chat requests pass the upstream `minimal_client_version` gate
 - **Claude**: normalize adaptive auto effort (`output_config.effort`) (#3792)
 - **Antigravity**: prevent Google anti-abuse rate limits during multi-account refresh (#3813)
 - **Anthropic-compatible**: forward Claude beta flags to nodes fronting Anthropic (#3797)

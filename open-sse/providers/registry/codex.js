@@ -1,4 +1,5 @@
 import { withCodexReviewModels } from "../models/helpers.js";
+import { CODEX_ORIGINATOR, CODEX_USER_AGENT } from "../../config/codex.js";
 
 export default {
   id: "codex",
@@ -35,8 +36,8 @@ export default {
     format: "openai-responses",
     forceStream: true,
     headers: {
-      originator: "codex_cli_rs",
-      "User-Agent": "codex_cli_rs/0.136.0",
+      originator: CODEX_ORIGINATOR,
+      "User-Agent": CODEX_USER_AGENT,
     },
     usage: {
       url: "https://chatgpt.com/backend-api/wham/usage",
@@ -79,7 +80,7 @@ export default {
     extraParams: {
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",
-      originator: "codex_cli_rs",
+      originator: CODEX_ORIGINATOR,
     },
     refreshLeadMs: 432000000,
     refresh: {
