@@ -239,6 +239,25 @@ export function resolveOutboundProxyUrl(targetUrl, proxyOptions = null) {
 }
 
 /**
+ * Build per-request proxyOptions from a connection's providerSpecificData.
+ * Chat and image must pass this into proxyAwareFetch — global fetch only
+ * honors Settings → Outbound Proxy (env), not the connection-level pool.
+ */
+export function buildCredentialProxyOptions(credentials) {
+  const data = credentials?.providerSpecificData || {};
+  return {
+    connectionProxyEnabled: data.connectionProxyEnabled === true,
+    connectionProxyUrl: data.connectionProxyUrl || "",
+    connectionNoProxy: data.connectionNoProxy || "",
+    vercelRelayUrl: data.vercelRelayUrl || "",
+    // Strict pools must never silently fall back to a direct connection —
+    // honored on the Cursor AgentService h2 path and in proxyFetch (#4333).
+    proxyPoolId: data.connectionProxyPoolId || null,
+    strictProxy: data.strictProxy === true,
+  };
+}
+
+/**
  * Create proxy dispatcher lazily (undici-compatible)
  */
 async function getDispatcher(proxyUrl, insecure = false) {
