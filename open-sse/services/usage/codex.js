@@ -4,6 +4,7 @@
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { CODEX_RESET_CREDIT_REQUEST_TIMEOUT_MS } from "../../config/runtimeConfig.js";
+import { CODEX_ORIGINATOR } from "../../config/codex.js";
 import { U, parseResetTime, toFiniteNumber } from "./shared.js";
 
 // Codex (OpenAI) API config
@@ -153,7 +154,7 @@ export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = 
     "Authorization": `Bearer ${accessToken}`,
     "Accept": "application/json",
     "OpenAI-Beta": "codex-1",
-    "originator": "codex_cli_rs",
+    "originator": CODEX_ORIGINATOR,
   };
   if (accountId) headers["ChatGPT-Account-ID"] = accountId;
 
