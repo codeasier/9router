@@ -10,6 +10,7 @@
 - **Gemini**: persist and replay `thoughtSignature` scoped by session namespace
 
 ## Fixes
+- **Models**: `GET /v1/models` returns only configured LLM combos; skip provider catalog expansion and live `/models` fetches (#17)
 - **Codex**: bump CLI fingerprint to 0.153.2 so gpt-5.6 / gpt-6-astra image and chat requests pass the upstream `minimal_client_version` gate
 - **Claude**: normalize adaptive auto effort (`output_config.effort`) (#3792)
 - **Antigravity**: prevent Google anti-abuse rate limits during multi-account refresh (#3813)

@@ -249,28 +249,66 @@ function comboMatchesKinds(combo, kindFilter) {
   return kindFilter.includes(kind);
 }
 
+function collectComboModels(combos, kindFilter) {
+  const models = [];
+  for (const combo of combos) {
+    if (!comboMatchesKinds(combo, kindFilter)) continue;
+    const entry = {
+      id: combo.name,
+      object: "model",
+      owned_by: "combo",
+    };
+    if (combo.kind === "webSearch" || combo.kind === "webFetch") {
+      entry.kind = combo.kind;
+    }
+    models.push(entry);
+  }
+  return models;
+}
+
+function dedupeModels(models) {
+  const dedupedModels = [];
+  const seenModelIds = new Set();
+  for (const model of models) {
+    if (!model?.id || seenModelIds.has(model.id)) continue;
+    seenModelIds.add(model.id);
+    dedupedModels.push(model);
+  }
+  return dedupedModels;
+}
+
 /**
  * Build OpenAI-format models list filtered by service kinds.
  * @param {string[]} kindFilter - List of service kinds to include (e.g. ["llm"], ["webSearch","webFetch"]).
+ * @param {{ skipDynamicFetch?: boolean, combosOnly?: boolean }} [options]
+ *   combosOnly: return configured combos only — no provider catalog, aliases,
+ *   custom models, or live `{baseUrl}/models` discovery. Used by GET /v1/models.
  */
 export async function buildModelsList(kindFilter, options = {}) {
   // When this header is present, the /v1/models request came from another
   // 9router instance's fetchCompatibleModelIds — skip dynamic fetch to break
   // cross-instance recursive loops.
   const skipDynamicFetch = options.skipDynamicFetch === true;
-  let connections = [];
-  try {
-    connections = await getProviderConnections();
-    connections = connections.filter(c => c.isActive !== false);
-  } catch (e) {
-    console.log("Could not fetch providers, returning all models");
-  }
+  const combosOnly = options.combosOnly === true;
 
   let combos = [];
   try {
     combos = await getCombos();
   } catch (e) {
     console.log("Could not fetch combos");
+  }
+
+  const models = collectComboModels(combos, kindFilter);
+  if (combosOnly) {
+    return dedupeModels(models);
+  }
+
+  let connections = [];
+  try {
+    connections = await getProviderConnections();
+    connections = connections.filter(c => c.isActive !== false);
+  } catch (e) {
+    console.log("Could not fetch providers, returning all models");
   }
 
   let customModels = [];
@@ -300,22 +338,6 @@ export async function buildModelsList(kindFilter, options = {}) {
     if (!activeConnectionByProvider.has(conn.provider)) {
       activeConnectionByProvider.set(conn.provider, conn);
     }
-  }
-
-  const models = [];
-
-  // Combos first (filtered by kind). Web combos expose `kind` so AI knows search vs fetch.
-  for (const combo of combos) {
-    if (!comboMatchesKinds(combo, kindFilter)) continue;
-    const entry = {
-      id: combo.name,
-      object: "model",
-      owned_by: "combo",
-    };
-    if (combo.kind === "webSearch" || combo.kind === "webFetch") {
-      entry.kind = combo.kind;
-    }
-    models.push(entry);
   }
 
   if (connections.length === 0) {
@@ -542,15 +564,7 @@ export async function buildModelsList(kindFilter, options = {}) {
     }
   }
 
-  const dedupedModels = [];
-  const seenModelIds = new Set();
-  for (const model of models) {
-    if (!model?.id || seenModelIds.has(model.id)) continue;
-    seenModelIds.add(model.id);
-    dedupedModels.push(model);
-  }
-
-  return dedupedModels;
+  return dedupeModels(models);
 }
 
 /**
@@ -567,14 +581,13 @@ export async function OPTIONS() {
 }
 
 /**
- * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
+ * GET /v1/models — configured LLM combos only (OpenAI-compatible list).
+ * Does not expand provider catalogs or live-fetch compatible `/models`.
  * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
  */
-export async function GET(request) {
+export async function GET() {
   try {
-    // Detect cross-instance recursive /models fetch (another 9router fetching our /models)
-    const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
-    const data = await buildModelsList([LLM_KIND], { skipDynamicFetch });
+    const data = await buildModelsList([LLM_KIND], { combosOnly: true });
     return Response.json({ object: "list", data }, {
       headers: { "Access-Control-Allow-Origin": "*" },
     });
