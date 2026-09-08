@@ -15,12 +15,15 @@ import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { resolveClineModels, resolveClinepassModels } from "open-sse/services/clinepassModels.js";
 import { NOUS_MODELS_URL, normalizeNousModels } from "open-sse/services/nous.js";
-import codexProvider from "open-sse/providers/registry/codex.js";
+import { CODEX_CLIENT_VERSION, CODEX_ORIGINATOR } from "open-sse/config/codex.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
-// Model discovery must identify as the same Codex CLI version as inference.
-const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${codexProvider.transport.cliVersion}`;
+// The /codex/models endpoint gates each entry by minimal_client_version against this
+// value, and codex CLI's own manifest (openai/codex codex-rs/models-manager/models.json)
+// already requires 0.153.0 for gpt-6-astra (and 0.144.0 for gpt-5.6), so a stale client_version here comes
+// back 200 with those entries quietly missing instead of erroring.
+const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
 
 const parseOpenAIStyleModels = (data) => {
   if (Array.isArray(data)) return data;
@@ -214,7 +217,7 @@ const PROVIDER_MODELS_CONFIG = {
           "Content-Type": "application/json",
           "Accept": "application/json",
           "Authorization": `Bearer ${token}`,
-          "originator": "codex_cli_rs"
+          "originator": CODEX_ORIGINATOR
         }
       }),
       parseFn: parseCodexModels,
