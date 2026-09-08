@@ -11,15 +11,18 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
+import * as proxyFetch from "../../open-sse/utils/proxyFetch.js";
 
 const originalFetch = global.fetch;
 
 describe("handleImageGenerationCore", () => {
   beforeEach(() => {
     global.fetch = vi.fn();
+    vi.spyOn(proxyFetch, "proxyAwareFetch").mockImplementation((url, init) => global.fetch(url, init));
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     global.fetch = originalFetch;
     vi.useRealTimers();
   });
@@ -84,6 +87,45 @@ describe("handleImageGenerationCore", () => {
     const responseBody = await result.response.json();
     expect(responseBody.data).toHaveLength(1);
     expect(responseBody.data[0].url).toBe("https://example.com/image.png");
+  });
+
+  it("passes the connection-level proxy into proxyAwareFetch", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          created: 1234567890,
+          data: [{ url: "https://example.com/image.png" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "A cute cat" },
+      modelInfo: { provider: "openai", model: "dall-e-3" },
+      credentials: {
+        apiKey: "test-key",
+        connectionName: "qyong",
+        providerSpecificData: {
+          connectionProxyEnabled: true,
+          connectionProxyUrl: "http://10.66.0.3:7895",
+          connectionNoProxy: "",
+          strictProxy: true,
+        },
+      },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    expect(proxyFetch.proxyAwareFetch).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/images/generations",
+      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({
+        connectionProxyEnabled: true,
+        connectionProxyUrl: "http://10.66.0.3:7895",
+        strictProxy: true,
+      }),
+    );
   });
 
   it("generates image with Gemini format", async () => {
@@ -512,8 +554,8 @@ describe("handleImageGenerationCore", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(global.fetch).toHaveBeenNthCalledWith(1, "https://example.com/source.png");
-    expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/mask.png");
+    expect(global.fetch).toHaveBeenNthCalledWith(1, "https://example.com/source.png", expect.anything());
+    expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/mask.png", expect.anything());
 
     const providerCall = global.fetch.mock.calls[2];
     expect(providerCall[0]).toBe("https://api.cloudflare.com/client/v4/accounts/cf-account/ai/run/@cf/runwayml/stable-diffusion-v1-5-inpainting");
@@ -835,7 +877,7 @@ describe("handleImageGenerationCore", () => {
       const result = await generate({}, { binaryOutput: true });
 
       expect(result.success).toBe(true);
-      expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/step.png");
+      expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/step.png", expect.anything());
       expect(new Uint8Array(await result.response.arrayBuffer())).toEqual(new Uint8Array([4, 5, 6]));
     });
 

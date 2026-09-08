@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
+import * as proxyFetch from "../../open-sse/utils/proxyFetch.js";
 
 const originalFetch = global.fetch;
 
@@ -23,9 +24,11 @@ function makeImage(b64 = "aGVsbG8=", mime = "image/png", name = "input.png") {
 describe("handleImageGenerationCore (edit)", () => {
   beforeEach(() => {
     global.fetch = vi.fn();
+    vi.spyOn(proxyFetch, "proxyAwareFetch").mockImplementation((url, init) => global.fetch(url, init));
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     global.fetch = originalFetch;
     vi.useRealTimers();
   });
