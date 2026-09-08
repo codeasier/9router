@@ -1,8 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getModelsByProviderId, getModelType, isValidModel } from "../../open-sse/config/providerModels.js";
+import { CODEX_CLIENT_VERSION, CODEX_USER_AGENT } from "../../open-sse/config/codex.js";
 import { getModelInfoCore } from "../../open-sse/services/model.js";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 import * as proxyFetch from "../../open-sse/utils/proxyFetch.js";
+
+function versionGte(actual, minimum) {
+  const a = String(actual).split(".").map(Number);
+  const b = String(minimum).split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] || 0) > (b[i] || 0)) return true;
+    if ((a[i] || 0) < (b[i] || 0)) return false;
+  }
+  return true;
+}
 
 const models = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"];
 
@@ -12,6 +23,10 @@ afterEach(() => {
 });
 
 describe("Codex GPT-5.6 image models", () => {
+  it("advertises a Codex client version that satisfies official gpt-5.6 and gpt-6-astra minima", () => {
+    expect(versionGte(CODEX_CLIENT_VERSION, "0.153.0")).toBe(true);
+  });
+
   it.each(models)("exposes %s-image as an image model while retaining its chat entry", (model) => {
     const catalog = getModelsByProviderId("codex");
     expect(catalog.filter((entry) => entry.id === `${model}-image`)).toHaveLength(1);
@@ -63,6 +78,8 @@ describe("Codex GPT-5.6 image models", () => {
     expect(result.response.headers.get("content-type")).toBe("text/event-stream");
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(options.headers.version).toBe(CODEX_CLIENT_VERSION);
+    expect(options.headers["user-agent"]).toBe(CODEX_USER_AGENT);
     const upstreamBody = JSON.parse(options.body);
     expect(upstreamBody.model).toBe(model);
     expect(upstreamBody.tools).toEqual([{
