@@ -4,6 +4,29 @@ import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { getExecutor } from "../executors/index.js";
 import { getImageAdapter } from "./imageProviders/index.js";
 import { urlToBase64 } from "./imageProviders/_base.js";
+import { proxyAwareFetch, buildCredentialProxyOptions } from "../utils/proxyFetch.js";
+
+function logImageProxy(provider, model, credentials, proxyOptions, log) {
+  if (proxyOptions.vercelRelayUrl) {
+    const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
+    const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
+    log?.info?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | pool=${poolId} | vercel-relay=${proxyOptions.vercelRelayUrl} | strict=${proxyOptions.strictProxy === true}`);
+    return;
+  }
+  if (!proxyOptions.connectionProxyEnabled || !proxyOptions.connectionProxyUrl) return;
+  let maskedProxyUrl = proxyOptions.connectionProxyUrl;
+  try {
+    const parsed = new URL(proxyOptions.connectionProxyUrl);
+    const host = parsed.hostname || "";
+    const port = parsed.port ? `:${parsed.port}` : "";
+    maskedProxyUrl = `${parsed.protocol || "http:"}//${host}${port}`;
+  } catch {
+    // Keep raw if URL parsing fails
+  }
+  const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
+  const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
+  log?.info?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | pool=${poolId} | url=${maskedProxyUrl} | strict=${proxyOptions.strictProxy === true}`);
+}
 
 function createLocalErrorResult(status, message) {
   return { ...createErrorResult(status, message), shouldFallback: false };
@@ -52,6 +75,8 @@ export async function handleImageGenerationCore({
 }) {
   const { provider, model } = modelInfo;
   const isEdit = operation === "edit";
+  const proxyOptions = buildCredentialProxyOptions(credentials);
+  logImageProxy(provider, model, credentials, proxyOptions, log);
 
   if (!body.prompt) {
     return createLocalErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
@@ -90,7 +115,7 @@ export async function handleImageGenerationCore({
   if (adapter.useExecutor && adapter.executeViaExecutor) {
     try {
       log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." (executor)`);
-      const responseBody = await adapter.executeViaExecutor(model, body, credentials, log);
+      const responseBody = await adapter.executeViaExecutor(model, body, credentials, log, proxyOptions);
       if (onRequestSuccess) await onRequestSuccess();
       const normalized = adapter.normalize(responseBody, body.prompt);
       const finalBody = (normalized.created && Array.isArray(normalized.data)) ? normalized : responseBody;
@@ -99,7 +124,7 @@ export async function handleImageGenerationCore({
         const first = finalBody.data?.[0];
         let b64 = first?.b64_json;
         if (!b64 && first?.url) {
-          try { b64 = await urlToBase64(first.url); } catch {}
+          try { b64 = await urlToBase64(first.url, proxyOptions); } catch {}
         }
         if (b64) {
           const buf = Buffer.from(b64, "base64");
@@ -159,7 +184,7 @@ export async function handleImageGenerationCore({
     if (isEdit && IMAGE_EDIT_LIMITS.timeoutMs > 0) {
       fetchOptions.signal = AbortSignal.timeout(IMAGE_EDIT_LIMITS.timeoutMs);
     }
-    providerResponse = await fetch(url, fetchOptions);
+    providerResponse = await proxyAwareFetch(url, fetchOptions, proxyOptions);
   } catch (error) {
     if (isEdit && error?.name === "TimeoutError") {
       const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.GATEWAY_TIMEOUT);
@@ -180,7 +205,7 @@ export async function handleImageGenerationCore({
       providerResponse.status === HTTP_STATUS.FORBIDDEN)
   ) {
     const newCredentials = await refreshWithRetry(
-      () => executor.refreshCredentials(credentials, log),
+      () => executor.refreshCredentials(credentials, log, proxyOptions),
       3,
       log
     );
@@ -213,7 +238,7 @@ export async function handleImageGenerationCore({
         if (isEdit && IMAGE_EDIT_LIMITS.timeoutMs > 0) {
           retryOptions.signal = AbortSignal.timeout(IMAGE_EDIT_LIMITS.timeoutMs);
         }
-        providerResponse = await fetch(retryUrl, retryOptions);
+        providerResponse = await proxyAwareFetch(retryUrl, retryOptions, proxyOptions);
       } catch {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
       }
@@ -242,6 +267,7 @@ export async function handleImageGenerationCore({
         requestBody,
         model,
         body,
+        proxyOptions,
       });
       // Codex streaming case: returns an SSE Response directly
       if (parsed?.sseResponse) {
@@ -267,7 +293,7 @@ export async function handleImageGenerationCore({
     const first = finalBody.data?.[0];
     let b64 = first?.b64_json;
     if (!b64 && first?.url) {
-      try { b64 = await urlToBase64(first.url); } catch {}
+      try { b64 = await urlToBase64(first.url, proxyOptions); } catch {}
     }
     if (b64) {
       const buf = Buffer.from(b64, "base64");

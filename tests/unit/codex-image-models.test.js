@@ -2,10 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getModelsByProviderId, getModelType, isValidModel } from "../../open-sse/config/providerModels.js";
 import { getModelInfoCore } from "../../open-sse/services/model.js";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
+import * as proxyFetch from "../../open-sse/utils/proxyFetch.js";
 
 const models = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"];
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("Codex GPT-5.6 image models", () => {
   it.each(models)("exposes %s-image as an image model while retaining its chat entry", (model) => {
@@ -32,6 +36,7 @@ describe("Codex GPT-5.6 image models", () => {
       { headers: { "Content-Type": "text/event-stream" } },
     ));
     vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(proxyFetch, "proxyAwareFetch").mockImplementation((url, init) => fetchMock(url, init));
     const onRequestSuccess = vi.fn();
     const modelInfo = await getModelInfoCore(`cx/${model}-image`);
     expect(modelInfo).toEqual({ provider: "codex", model: `${model}-image` });
