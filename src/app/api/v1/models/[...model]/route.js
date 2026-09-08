@@ -49,7 +49,8 @@ export async function GET(_request, { params }) {
       return json({ object: "list", data });
     }
 
-    // Match the same LLM catalog exposed by GET /v1/models. A catch-all
+    // Single-model lookup still uses the expanded LLM catalog (combos plus
+    // provider aliases). GET /v1/models itself is combo-only. A catch-all
     // parameter is required because provider-prefixed IDs contain a slash.
     const models = await buildModelsList([LLM_KIND]);
     const matchedModel = models.find((candidate) => candidate.id === identifier);
