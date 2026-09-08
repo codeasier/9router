@@ -247,7 +247,7 @@ describe("handleImageEdit", () => {
       "step-plan",
       expect.any(Set),
       "step-image-edit-2",
-      { preferredConnectionId: null },
+      { preferredConnectionId: null, ignoreModelLock: true },
     );
     expect(coreMocks.handleImageGenerationCore).toHaveBeenCalledWith(expect.objectContaining({
       operation: "edit",
