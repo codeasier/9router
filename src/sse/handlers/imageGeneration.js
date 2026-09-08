@@ -109,7 +109,10 @@ export async function handleSingleModelImage(body, modelStr, { wantsStream, bina
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+      ignoreModelLock: true,
+    });
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
@@ -149,7 +152,18 @@ export async function handleSingleModelImage(body, modelStr, { wantsStream, bina
 
     if (result.shouldFallback === false) return result.response;
 
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
+    // Image failures still try the next account in this request, but do not
+    // persist modelLock_* — entitlement/unsupported-model 4xx/5xx would
+    // otherwise take the image model offline for 30s with no recovery.
+    const { shouldFallback } = await markAccountUnavailable(
+      credentials.connectionId,
+      result.status,
+      result.error,
+      provider,
+      model,
+      null,
+      { persistLock: false },
+    );
 
     if (shouldFallback) {
       excludeConnectionIds.add(credentials.connectionId);
