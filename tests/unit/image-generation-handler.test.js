@@ -168,7 +168,7 @@ describe("handleImageGeneration", () => {
       "step-plan",
       expect.any(Set),
       "step-image-edit-2",
-      { preferredConnectionId: "preferred-step-plan" },
+      { preferredConnectionId: "preferred-step-plan", ignoreModelLock: true },
     );
   });
 
@@ -199,6 +199,8 @@ describe("handleImageGeneration", () => {
       "rate limited",
       "step-plan",
       "step-image-edit-2",
+      null,
+      { persistLock: false },
     );
     expect(authMocks.getProviderCredentials.mock.calls[1][1]).toEqual(new Set(["step-connection-1"]));
     expect(coreMocks.handleImageGenerationCore.mock.calls[1][0].credentials).toBe(second);
@@ -225,7 +227,7 @@ describe("handleImageGeneration", () => {
       "step-plan",
       expect.any(Set),
       "step-image-edit-2",
-      { preferredConnectionId: null },
+      { preferredConnectionId: null, ignoreModelLock: true },
     );
   });
 
