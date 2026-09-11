@@ -89,7 +89,7 @@ export default {
     extraParams: {
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",
-      originator: CODEX_ORIGINATOR,
+      originator: "codex_cli_rs",
     },
     refreshLeadMs: 432000000,
     refresh: {
