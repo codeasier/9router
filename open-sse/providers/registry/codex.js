@@ -98,7 +98,7 @@ export default {
     extraParams: {
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",
-      originator: CODEX_ORIGINATOR,
+      originator: "codex_cli_rs",
     },
     // Access tokens live ~1h; a 5d lead rotated the refresh token on EVERY call —
     // reuse of a rotated token revokes the whole OpenAI session (account logout).
