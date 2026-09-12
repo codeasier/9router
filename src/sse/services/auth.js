@@ -209,6 +209,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         ...toCredentialProxyFields(resolvedProxy),
       },
       connectionId: connection.id,
+      // The Codex SSE peek is only needed when another currently available
+      // account can receive a transparent retry.
+      hasAlternateConnection: availableConnections.length > 1,
       // Include current status for optimization check
       testStatus: connection.testStatus,
       lastError: connection.lastError,

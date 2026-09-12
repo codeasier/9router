@@ -286,6 +286,10 @@ export class CodexExecutor extends BaseExecutor {
       await this.prefetchImages(args.body);
     }
 
+    // A single-account, single-model route has no transparent destination for
+    // a 200-SSE capacity error, so preserve the native stream timing.
+    if (args.allowCodexSseFallback === false) return super.execute(args);
+
     // Retry loop for SSE-level overloaded errors (200 OK body contains event: error)
     // Reuses 503 retry config — same semantic: upstream temporarily unavailable
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
