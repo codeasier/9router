@@ -18,11 +18,18 @@ import { CODEX_CLIENT_VERSION, CODEX_ORIGINATOR } from "../config/codex.js";
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
 const CODEX_SSE_RETRY_PATTERNS = ["server_is_overloaded", "service_unavailable_error"];
 const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = ["selected model is at capacity", "model_at_capacity"];
+// Reasoning deltas are user-visible output too: Codex always streams a reasoning
+// summary first (transformRequest forces summary:"auto"), so leaving them out of
+// this gate held the whole thinking phase back until the first answer token.
 const CODEX_SSE_USER_OUTPUT_PATTERNS = [
   "event: response.output_text.delta",
   "event: response.function_call_arguments.delta",
+  "event: response.reasoning_summary_text.delta",
+  "event: response.reasoning_text.delta",
   '"type":"response.output_text.delta"',
   '"type":"response.function_call_arguments.delta"',
+  '"type":"response.reasoning_summary_text.delta"',
+  '"type":"response.reasoning_text.delta"',
 ];
 const CODEX_SSE_PEEK_BYTES = 256 * 1024;
 const CODEX_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
