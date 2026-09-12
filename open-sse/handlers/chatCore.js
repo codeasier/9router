@@ -63,7 +63,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, customPromptEnabled, customPrompt, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, providerOverrides, modelOverrides }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, customPromptEnabled, customPrompt, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, providerOverrides, modelOverrides, allowCodexSseFallback = true }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -162,6 +162,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Skip all translation/normalization — only model and Bearer are swapped
   const clientTool = detectClientTool(clientRawRequest?.headers || {}, body);
   const passthrough = isNativePassthrough(clientTool, provider);
+  const effectiveAllowCodexSseFallback = provider === "codex" && clientTool === "codex" && passthrough
+    ? allowCodexSseFallback
+    : true;
 
   // Expose raw client headers to translators/executors for session-id resolution
   if (credentials) credentials.rawHeaders = clientRawRequest?.headers || {};
@@ -391,6 +394,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       log,
       proxyOptions,
       providerOverrides,
+      allowCodexSseFallback: effectiveAllowCodexSseFallback,
     });
     providerResponse = result.response;
     providerUrl = result.url;
@@ -460,6 +464,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
             log,
             proxyOptions,
             providerOverrides,
+            allowCodexSseFallback: effectiveAllowCodexSseFallback,
           });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
