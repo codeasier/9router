@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CodexExecutor } from "../../open-sse/executors/codex.js";
+import { BaseExecutor } from "../../open-sse/executors/base.js";
 
 function streamFromText(text) {
   const encoder = new TextEncoder();
@@ -85,6 +86,31 @@ describe("Codex fast tier and capacity handling", () => {
     const peek = await executor._peekSseTransientError(response);
     expect(peek.matched).toBeNull();
     await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
+  });
+
+  it("skips the SSE peek when no transparent fallback is available", async () => {
+    const executor = new CodexExecutor();
+    const response = new Response(streamFromText(sseBlock("response.created", { type: "response.created" })), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+    const execute = vi.spyOn(BaseExecutor.prototype, "execute").mockResolvedValue({ response });
+    const peek = vi.spyOn(executor, "_peekSseTransientError");
+
+    try {
+      const result = await executor.execute({
+        model: "gpt-6-astra",
+        body: { model: "gpt-6-astra", input: "hi" },
+        stream: true,
+        credentials: {},
+        allowCodexSseFallback: false,
+      });
+      expect(result.response).toBe(response);
+      expect(peek).not.toHaveBeenCalled();
+    } finally {
+      peek.mockRestore();
+      execute.mockRestore();
+    }
   });
 
   it("yields at the first reasoning delta instead of holding the thinking phase", async () => {
