@@ -359,6 +359,7 @@ export async function POST(request) {
           break;
         }
 
+        case "volceapi":
         case "deepseek":
         case "groq":
         case "xai":

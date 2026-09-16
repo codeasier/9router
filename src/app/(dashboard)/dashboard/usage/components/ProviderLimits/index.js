@@ -7,7 +7,7 @@ import Toggle from "@/shared/components/Toggle";
 import Tooltip from "@/shared/components/Tooltip";
 import {
   parseQuotaData,
-  calculatePercentage,
+  isDepletedQuotaRow,
   filterQuotasByVisibility,
   getHiddenQuotaRows,
   getQuotaVisibilityKey,
@@ -71,6 +71,121 @@ function kiroMethodLabel(conn) {
   const m = conn.providerSpecificData?.authMethod;
   if (m && KIRO_METHOD_LABELS[m]) return KIRO_METHOD_LABELS[m];
   return conn.authType === "api_key" ? "API Key" : "OAuth";
+}
+
+function formatVolceShare(value) {
+  if (!Number.isFinite(Number(value))) return "—";
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function VolceapiDetailsModal({ state, onClose }) {
+  const [windowKey, setWindowKey] = useState("today");
+  if (!state) return null;
+  const details = state.details || {};
+  const models = details.byModel?.[windowKey] || [];
+  const providers = details.byProvider?.[windowKey] || [];
+  const windowInfo = details.windows?.[windowKey] || {};
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-3xl overflow-hidden rounded-2xl border border-black/15 bg-white shadow-2xl ring-1 ring-black/10 dark:border-white/15 dark:bg-neutral-950 dark:ring-white/10">
+        <div className="flex items-start justify-between gap-3 border-b border-black/10 bg-black/[0.03] px-4 py-3 dark:border-white/10 dark:bg-white/[0.04]">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-text-primary">火山网关 usage</h3>
+            <p className="mt-0.5 truncate text-xs text-text-muted">
+              {getConnectionLabel(state.connection) || "volceapi"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-black/5 hover:text-text-primary dark:hover:bg-white/5"
+            aria-label="Close 火山网关 usage details"
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+        <div className="max-h-[70vh] overflow-auto bg-white p-4 dark:bg-neutral-950">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            {["today", "week", "month"].map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setWindowKey(key)}
+                className={`rounded-lg border px-2 py-1 text-xs ${
+                  windowKey === key
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-black/10 text-text-muted dark:border-white/10"
+                }`}
+              >
+                {key}
+              </button>
+            ))}
+            <span className="text-[11px] text-text-muted">
+              {windowInfo.creditComplete
+                ? `Credits ${windowInfo.credit ?? 0} / local ${details.limits?.[windowKey] ?? "—"}`
+                : "Credit estimate incomplete"}
+            </span>
+          </div>
+          {state.note && (
+            <p className="mb-3 text-[11px] leading-relaxed text-text-muted">{state.note}</p>
+          )}
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">By model (credit)</h4>
+          <div className="mb-4 overflow-x-auto rounded-xl border border-black/10 dark:border-white/10">
+            <table className="w-full min-w-[560px] text-left text-sm">
+              <thead className="bg-black/[0.03] text-xs uppercase tracking-wide text-text-muted dark:bg-white/[0.04]">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Model</th>
+                  <th className="px-3 py-2 font-medium">Credit</th>
+                  <th className="px-3 py-2 font-medium">Tokens</th>
+                  <th className="px-3 py-2 font-medium">Share</th>
+                  <th className="px-3 py-2 font-medium">Cache</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.length ? models.map((row) => (
+                  <tr key={row.model} className="border-t border-black/5 dark:border-white/5">
+                    <td className="px-3 py-2 font-medium text-text-primary">{row.model}</td>
+                    <td className="px-3 py-2 text-text-primary">{row.creditComplete ? row.credit : "unavailable"}</td>
+                    <td className="px-3 py-2 text-text-muted">{Number(row.totalTokens || 0).toLocaleString()}</td>
+                    <td className="px-3 py-2 text-text-muted">{formatVolceShare(row.share)}</td>
+                    <td className="px-3 py-2 text-text-muted">{formatVolceShare(row.cacheHitRate)}</td>
+                  </tr>
+                )) : (
+                  <tr><td className="px-3 py-4 text-sm text-text-muted" colSpan={5}>No by-model data for this window.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">By provider (tokens only)</h4>
+          <div className="overflow-x-auto rounded-xl border border-black/10 dark:border-white/10">
+            <table className="w-full min-w-[480px] text-left text-sm">
+              <thead className="bg-black/[0.03] text-xs uppercase tracking-wide text-text-muted dark:bg-white/[0.04]">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Provider</th>
+                  <th className="px-3 py-2 font-medium">Tokens</th>
+                  <th className="px-3 py-2 font-medium">Requests</th>
+                  <th className="px-3 py-2 font-medium">Token share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {providers.length ? providers.map((row) => (
+                  <tr key={row.provider} className="border-t border-black/5 dark:border-white/5">
+                    <td className="px-3 py-2 font-medium text-text-primary">{row.provider}</td>
+                    <td className="px-3 py-2 text-text-muted">{Number(row.totalTokens || 0).toLocaleString()}</td>
+                    <td className="px-3 py-2 text-text-muted">{Number(row.requestCount || 0).toLocaleString()}</td>
+                    <td className="px-3 py-2 text-text-muted">{formatVolceShare(row.share)}</td>
+                  </tr>
+                )) : (
+                  <tr><td className="px-3 py-4 text-sm text-text-muted" colSpan={4}>No by-provider data for this window. Provider credit is not computed.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function getConnectionSecondaryLabel(connection) {
@@ -150,6 +265,7 @@ export default function ProviderLimits() {
   const [resettingLimitId, setResettingLimitId] = useState(null);
   const [resetConfirmState, setResetConfirmState] = useState(null);
   const [resetCreditsState, setResetCreditsState] = useState(null);
+  const [volceapiDetails, setVolceapiDetails] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
@@ -751,10 +867,7 @@ export default function ProviderLimits() {
   const isConnectionDepleted = (conn) => {
     const quotas = quotaData[conn.id]?.quotas;
     if (!quotas?.length) return false;
-    return quotas.some((q) => {
-      if (!q.total || q.total <= 0) return false;
-      return calculatePercentage(q.used, q.total) <= DEPLETED_QUOTA_THRESHOLD;
-    });
+    return quotas.some((q) => isDepletedQuotaRow(q, DEPLETED_QUOTA_THRESHOLD));
   };
 
   const bulkSetActive = useCallback(
@@ -1269,6 +1382,19 @@ export default function ProviderLimits() {
                         </button>
                       </Tooltip>
                     )}
+                    {conn.provider === "volceapi" && quota?.raw?.details && (
+                      <Tooltip text="View model and provider usage">
+                        <button
+                          type="button"
+                          onClick={() => setVolceapiDetails({ connection: conn, details: quota.raw.details, note: quota.raw.note })}
+                          disabled={isLoading || rowBusy}
+                          aria-label="View 火山网关 usage details"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-black/10 text-text-muted transition-colors hover:bg-black/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:hover:bg-white/5"
+                        >
+                          <span className="material-symbols-outlined text-[17px]">analytics</span>
+                        </button>
+                      </Tooltip>
+                    )}
                     <Tooltip text="Refresh quota">
                       <button
                         type="button"
@@ -1368,6 +1494,11 @@ export default function ProviderLimits() {
                 {quota?.message && !error && !isLoading && (
                   <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
                     {quota.message}
+                  </p>
+                )}
+                {quota?.raw?.note && !quota?.message && !error && !isLoading && (
+                  <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
+                    {quota.raw.note}
                   </p>
                 )}
                 {hiddenQuotaRows.length > 0 && (
@@ -1611,6 +1742,11 @@ export default function ProviderLimits() {
           </div>
         </div>
       )}
+
+      <VolceapiDetailsModal
+        state={volceapiDetails}
+        onClose={() => setVolceapiDetails(null)}
+      />
 
       <EditConnectionModal
         isOpen={showEditModal}

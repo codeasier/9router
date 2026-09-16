@@ -116,7 +116,9 @@
     "devin": "devin",
     "devin-cli": "devin-cli",
     "morph": "morph",
-    "morphllm": "morph"
+    "morphllm": "morph",
+    "volce": "volceapi",
+    "volceapi": "volceapi"
   },
   "idToAlias": {
     "alicode": "alicode",
@@ -197,6 +199,7 @@
     "vercel-ai-gateway": "vercel-ai-gateway",
     "vertex": "vertex",
     "vertex-partner": "vertex-partner",
+    "volceapi": "volceapi",
     "volcengine-ark": "volcengine-ark",
     "xai": "xai",
     "xiaomi-mimo": "xiaomi-mimo",
@@ -298,6 +301,7 @@
     "venice",
     "vertex",
     "vertex-partner",
+    "volceapi",
     "volcengine-ark",
     "voyage-ai",
     "xai",

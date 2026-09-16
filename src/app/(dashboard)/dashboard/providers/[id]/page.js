@@ -10,6 +10,8 @@ import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS,
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import { applyModelOverridePatch, protocolOptionsForModel } from "open-sse/services/modelOverrides.js";
+import { setCustomModelFormatOverlay } from "open-sse/config/customModelFormats.js";
+import { PROVIDERS } from "open-sse/config/providers.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
@@ -88,6 +90,7 @@ export default function ProviderDetailPage() {
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   const [importingClineModels, setImportingClineModels] = useState(false);
+  const [importingVolceapiModels, setImportingVolceapiModels] = useState(false);
   const { copied, copy } = useCopyToClipboard();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
@@ -294,6 +297,10 @@ export default function ProviderDetailPage() {
       console.log("Error fetching custom models:", error);
     }
   }, []);
+
+  useEffect(() => {
+    setCustomModelFormatOverlay(customModels);
+  }, [customModels]);
 
   // Fetch free models from Kilo API for kilocode provider
   useEffect(() => {
@@ -616,12 +623,19 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias, caps) => {
+  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias, caps, formats) => {
     try {
       const res = await fetch("/api/models/custom", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerAlias: providerAliasOverride, id: modelId, type, ...(caps ? { caps } : {}) }),
+        body: JSON.stringify({
+          providerAlias: providerAliasOverride,
+          id: modelId,
+          type,
+          ...(caps ? { caps } : {}),
+          ...(formats?.supportedFormats ? { supportedFormats: formats.supportedFormats } : {}),
+          ...(formats?.targetFormat ? { targetFormat: formats.targetFormat } : {}),
+        }),
       });
       if (res.ok) {
         await fetchCustomModels();
@@ -747,6 +761,50 @@ export default function ProviderDetailPage() {
       alert(translate("Error fetching models") + ": " + error.message);
     } finally {
       setImportingClineModels(false);
+    }
+  };
+
+  const handleImportVolceapiModels = async () => {
+    if (importingVolceapiModels) return;
+    const activeConnection = connections.find((conn) => conn.isActive !== false);
+    if (!activeConnection) {
+      alert(translate("Please add an active connection first"));
+      return;
+    }
+    setImportingVolceapiModels(true);
+    try {
+      const res = await fetch(`/api/providers/${activeConnection.id}/models`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || translate("Failed to fetch models"));
+        return;
+      }
+      const models = data.models || [];
+      if (models.length === 0) {
+        alert(translate("No models returned"));
+        return;
+      }
+      let importedCount = 0;
+      for (const model of models) {
+        const modelId = model.id || model.name;
+        if (!modelId) continue;
+        const alreadyExists = customModels.some(
+          (entry) => entry.providerAlias === providerStorageAlias && entry.id === modelId && (entry.kind || entry.type || "llm") === "llm"
+        ) || Object.values(modelAliases).includes(`${providerStorageAlias}/${modelId}`);
+        if (alreadyExists) continue;
+        await handleAddCustomModel(modelId, "llm", providerStorageAlias);
+        importedCount += 1;
+      }
+      if (importedCount === 0) {
+        alert(translate("All models already exist, no new models added"));
+      } else {
+        alert(translate("Successfully added") + ` ${importedCount} ` + translate("models"));
+      }
+    } catch (error) {
+      console.log("Error importing volceapi models:", error);
+      alert(translate("Error fetching models") + ": " + error.message);
+    } finally {
+      setImportingVolceapiModels(false);
     }
   };
 
@@ -1328,6 +1386,19 @@ export default function ProviderDetailPage() {
         )}
 
         {/* Import Cline /models catalog button — only show for cline and clinepass providers */}
+        {providerId === "volceapi" && connections.some((conn) => conn.isActive !== false) && (
+          <button
+            onClick={handleImportVolceapiModels}
+            disabled={importingVolceapiModels}
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-500/40 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500 hover:bg-blue-500/5 sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span className="material-symbols-outlined text-sm" style={importingVolceapiModels ? { animation: "spin 1s linear infinite" } : undefined}>
+              {importingVolceapiModels ? "progress_activity" : "download"}
+            </span>
+            {importingVolceapiModels ? translate("Fetching...") : translate("Import from /models")}
+          </button>
+        )}
+
         {(providerId === "cline" || providerId === "clinepass") && connections.some((conn) => conn.isActive !== false) && (
           <button
             onClick={handleImportClineModels}
@@ -1971,8 +2042,15 @@ export default function ProviderDetailPage() {
           isOpen={showAddCustomModel}
           providerAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
-          onSave={async (modelId, caps) => {
-            await handleAddCustomModel(modelId, "llm", providerStorageAlias, caps);
+          formatOptions={(PROVIDERS[providerId]?.transports || [])
+            .filter((transport) => transport?.format)
+            .map((transport) => ({
+              id: transport.format,
+              label: transport.format === "openai" ? "chat" : transport.format === "openai-responses" ? "responses" : transport.format === "claude" ? "messages" : transport.format,
+              description: transport.format,
+            }))}
+          onSave={async (modelId, caps, formats) => {
+            await handleAddCustomModel(modelId, "llm", providerStorageAlias, caps, formats);
             setShowAddCustomModel(false);
           }}
           onClose={() => setShowAddCustomModel(false)}
