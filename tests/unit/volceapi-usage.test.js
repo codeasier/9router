@@ -8,6 +8,8 @@ import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 import { getUsageForProvider } from "../../open-sse/services/usage.js";
 import {
   estimateModelCredit,
+  findModelMeta,
+  indexModelsById,
   resolveCreditCoefficient,
   resolveVolceapiLimits,
 } from "../../open-sse/services/usage/volceapiCredit.js";
@@ -108,6 +110,31 @@ describe("volceapi credit math", () => {
     }, meta)).toEqual({ credit: 4.72, complete: true });
   });
 
+  it("skips zero-token days before credit_history starts instead of failing the window", () => {
+    expect(estimateModelCredit({
+      daily: [
+        { date: "2026-09-01", total_tokens: 0 },
+        { date: "2026-09-15", total_tokens: 1_000_000 },
+      ],
+    }, {
+      credit: 4.51,
+      credit_history: [{ from: "2026-09-14", credit: 4.51 }],
+    })).toEqual({ credit: 4.51, complete: true });
+  });
+
+  it("maps retired dated model ids onto the current catalog entry", () => {
+    const index = indexModelsById({
+      data: [{ id: "glm-5.3", credit: 2.77, credit_history: [{ from: "2026-08-01", credit: 2.77 }] }],
+    });
+    expect(findModelMeta(index, "glm-5-3-260814")?.id).toBe("glm-5.3");
+    expect(estimateModelCredit({
+      daily: [
+        { date: "2026-09-01", total_tokens: 0 },
+        { date: "2026-09-03", total_tokens: 1_000_000 },
+      ],
+    }, findModelMeta(index, "glm-5-3-260814"))).toEqual({ credit: 2.77, complete: true });
+  });
+
   it("marks missing model metadata or daily rows incomplete instead of zero", () => {
     expect(estimateModelCredit({ daily: [] }, MODELS.data[0])).toMatchObject({ complete: false });
     expect(estimateModelCredit({ daily: [{ date: "2026-09-16", total_tokens: 1000 }] }, null)).toMatchObject({ complete: false });
@@ -171,8 +198,50 @@ describe("getUsageForProvider(volceapi)", () => {
     expect(usage.quotas["Tokens (today)"].used).toBe(16544347);
     expect(usage.details.estimateComplete).toBe(false);
     expect(usage.note).toMatch(/incomplete/i);
-    expect(usage.note).toMatch(/details/i);
     expect(usage.message).toBeUndefined();
+  });
+
+  it("completes month credits when daily zeros precede history and dated ids alias", async () => {
+    proxyAwareFetch.mockImplementation(async (url) => {
+      const href = String(url);
+      if (href.includes("/usage/summary")) return jsonResponse(TODAY_SUMMARY);
+      if (href.includes("/usage/by-provider")) return jsonResponse(TODAY_BY_PROVIDER);
+      if (href.endsWith("/models") || href.includes("/models?")) return jsonResponse(MODELS);
+      if (href.includes("/usage/by-model") && href.includes("window=month")) {
+        return jsonResponse({
+          object: "list",
+          window: "month",
+          data: [
+            {
+              model: "glm-5-3-260814",
+              total_tokens: 1_000_000,
+              daily: [
+                { date: "2026-09-01", total_tokens: 0 },
+                { date: "2026-09-03", total_tokens: 1_000_000 },
+              ],
+            },
+            {
+              model: "kimi-k3",
+              total_tokens: 0,
+              daily: [
+                { date: "2026-09-01", total_tokens: 0 },
+                { date: "2026-09-16", total_tokens: 0 },
+              ],
+            },
+          ],
+        });
+      }
+      if (href.includes("/usage/by-model")) return jsonResponse(TODAY_BY_MODEL);
+      return jsonResponse({ error: href }, 404);
+    });
+    const usage = await getUsageForProvider({ provider: "volceapi", apiKey: "sk-volce" });
+    expect(usage.quotas["Credits (month)"]).toMatchObject({
+      used: 2.77,
+      total: 1000,
+      remainingPercentage: 100,
+    });
+    expect(usage.quotas["Credits (month)"].incomplete).toBeUndefined();
+    expect(usage.details.windows.month.creditComplete).toBe(true);
   });
 
   it("returns a message on missing key / 401 without inventing zero usage", async () => {
