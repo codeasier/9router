@@ -125,7 +125,6 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./fish-audio.js";
 import p121 from "./alitp-intl.js";
 import p122 from "./xquik.js";
-import p124 from "./step-plan.js";
 import p125 from "./tokenharbor.js";
 import p126 from "./dahl.js";
 import p127 from "./atria.js";
@@ -139,6 +138,8 @@ import p135 from "./minimax-code-global.js";
 import p136 from "./bedrock.js";
 import p137 from "./bedrock-xai.js";
 import p138 from "./nous.js";
+import p139 from "./volceapi.js";
+import p140 from "./step-plan.js";
 export default [
   p0,
   p1,
@@ -278,4 +279,6 @@ export default [
   p136,
   p137,
   p138,
+  p139,
+  p140,
 ];

@@ -131,7 +131,9 @@
     "nous": "nous",
     "nous-portal": "nous",
     "nous-research": "nous",
-    "ns": "nous"
+    "ns": "nous",
+    "volce": "volceapi",
+    "volceapi": "volceapi"
   },
   "idToAlias": {
     "agnes": "agnes",
@@ -260,6 +262,7 @@
     "vercel-ai-gateway": "vercel-ai-gateway",
     "vertex": "vertex",
     "vertex-partner": "vertex-partner",
+    "volceapi": "volceapi",
     "volcengine-ark": "volcengine-ark",
     "voyage-ai": "voyage-ai",
     "xai": "xai",
@@ -376,6 +379,7 @@
     "venice",
     "vertex",
     "vertex-partner",
+    "volceapi",
     "volcengine-ark",
     "voyage-ai",
     "xai",

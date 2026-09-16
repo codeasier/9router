@@ -7,9 +7,10 @@ import { CAPACITY_META, STT_TRANSPORT_META, STT_TRANSPORTS } from "@/shared/cons
 
 const defaultCaps = () => Object.fromEntries(Object.keys(CAPACITY_META).map((key) => [key, false]));
 
-export default function AddCustomModelModal({ isOpen, providerAlias, providerDisplayAlias, onSave, onClose }) {
+export default function AddCustomModelModal({ isOpen, providerAlias, providerDisplayAlias, onSave, onClose, formatOptions = [] }) {
   const [modelId, setModelId] = useState("");
   const [caps, setCaps] = useState(defaultCaps);
+  const [selectedFormats, setSelectedFormats] = useState([]);
   const [testStatus, setTestStatus] = useState(null); // null | "testing" | "ok" | "error"
   const [testError, setTestError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -18,7 +19,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
 
   // Reset state when modal opens
   useEffect(() => {
-    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setTransport(""); setTestStatus(null); setTestError(""); }
+    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setTransport(""); setSelectedFormats([]); setTestStatus(null); setTestError(""); }
   }, [isOpen]);
 
   // Strip provider's own alias prefix (e.g. "cc/model" -> "model" for cc provider)
@@ -54,7 +55,10 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
     try {
       // caps.stt is UI-only; the parent save flow derives the model type from
       // it and forwards the pinned transport (null unless the caller picked one).
-      await onSave(cleanId, caps, caps.stt ? transport : null);
+      const formats = selectedFormats.length
+        ? { supportedFormats: selectedFormats, targetFormat: selectedFormats[0] }
+        : undefined;
+      await onSave(cleanId, caps, caps.stt ? transport : null, formats);
     } finally {
       setSaving(false);
     }
@@ -93,6 +97,29 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
             Sent to provider as: <code className="font-mono bg-sidebar px-1 rounded">{stripAlias(modelId.trim()) || "model-id"}</code>
           </p>
         </div>
+
+        {formatOptions.length > 0 && (
+          <div>
+            <label className="text-sm font-medium mb-1.5 block">Upstream protocols</label>
+            <div className="flex flex-wrap gap-4">
+              {formatOptions.map((option) => (
+                <Toggle
+                  key={option.id}
+                  checked={selectedFormats.includes(option.id)}
+                  onChange={(checked) => setSelectedFormats((prev) => (
+                    checked ? [...prev, option.id] : prev.filter((id) => id !== option.id)
+                  ))}
+                  label={option.label}
+                  description={option.description}
+                  size="sm"
+                />
+              ))}
+            </div>
+            <p className="text-xs text-text-muted mt-1">
+              Leave all off to leave formats undeclared (assumes every provider transport is usable).
+            </p>
+          </div>
+        )}
 
         <div>
           <label className="text-sm font-medium mb-1.5 block">Capabilities</label>
@@ -172,4 +199,9 @@ AddCustomModelModal.propTypes = {
   providerDisplayAlias: PropTypes.string.isRequired,
   onSave: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
+  formatOptions: PropTypes.arrayOf(PropTypes.shape({
+    id: PropTypes.string.isRequired,
+    label: PropTypes.string.isRequired,
+    description: PropTypes.string,
+  })),
 };
