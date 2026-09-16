@@ -20,3 +20,13 @@ export const VOLCEAPI_WINDOW_LABELS = Object.freeze({
   week: "week",
   month: "month",
 });
+
+// kimi-k3 on this gateway rejects any temperature other than 1 (issue #20).
+export const VOLCEAPI_KIMI_K3_MODEL = "kimi-k3";
+
+export const VOLCEAPI_REQUEST_OVERRIDES = Object.freeze([
+  Object.freeze({
+    models: Object.freeze([VOLCEAPI_KIMI_K3_MODEL]),
+    set: Object.freeze({ temperature: 1 }),
+  }),
+]);

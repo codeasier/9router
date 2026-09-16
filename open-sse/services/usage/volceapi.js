@@ -248,8 +248,8 @@ export async function getVolceapiUsage(apiKey = null, proxyOptions = null, provi
     }
 
     const note = details.estimateComplete
-      ? "Credits vs local caps (day 150 / week 450 / month 1000 by default). Upstream tokens are consumption, not quota."
-      : "Credit estimate incomplete — local remaining is hidden until daily tokens and date-effective coefficients are available. Token counts are still shown.";
+      ? "Credits vs local caps (day 150 / week 450 / month 1000 by default). Token usage is in details — not a quota."
+      : "Credit estimate incomplete — local remaining is hidden until daily tokens and date-effective coefficients are available. Open details for token counts.";
 
     return {
       plan: "火山网关",

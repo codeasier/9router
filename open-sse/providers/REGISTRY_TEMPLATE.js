@@ -95,4 +95,9 @@ export default {
   // features: { usage: true },
   // thinkingConfig: { options: ["auto", "none", "low", "high"], defaultMode: "auto" },
   // passthroughModels: true,
+  // Per-model body/header overrides applied by DefaultExecutor after param strip.
+  // requestOverrides: [
+  //   { models: ["example-large"], set: { temperature: 1 }, headers: { "X-Example": "1" } },
+  //   { match: /^legacy-/i, drop: ["top_p"] },
+  // ],
 };
