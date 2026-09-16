@@ -1,3 +1,4 @@
+import { normalizeModelId } from "../../providers/models/schema.js";
 import {
   VOLCEAPI_CREDIT_PER_MILLION,
   VOLCEAPI_DEFAULT_LIMITS,
@@ -99,11 +100,24 @@ export function estimateModelCredit(modelUsage, modelMeta) {
     if (!date || !Number.isFinite(tokens)) {
       return { credit: 0, complete: false, reason: "incomplete-daily" };
     }
+    // Dense month/week series include unused days as 0. Those do not consume
+    // credit and must not fail the window when history starts mid-month.
+    if (tokens === 0) continue;
     const { coefficient, complete } = resolveCreditCoefficient(date, modelMeta);
     if (!complete) return { credit: 0, complete: false, reason: "missing-coefficient" };
     credit += tokens * coefficient / VOLCEAPI_CREDIT_PER_MILLION;
   }
   return { credit: roundCredit(credit), complete: true };
+}
+
+export function modelMetaLookupKeys(modelId) {
+  if (typeof modelId !== "string" || !modelId) return [];
+  const keys = [modelId, modelId.toLowerCase()];
+  const withoutDate = modelId.replace(/-\d{6}$/, "");
+  if (withoutDate !== modelId) {
+    keys.push(withoutDate, withoutDate.toLowerCase(), normalizeModelId(withoutDate));
+  }
+  return [...new Set(keys.filter(Boolean))];
 }
 
 export function indexModelsById(modelsPayload) {
@@ -114,7 +128,20 @@ export function indexModelsById(modelsPayload) {
       : [];
   const index = new Map();
   for (const model of list) {
-    if (model && typeof model.id === "string" && model.id) index.set(model.id, model);
+    if (model && typeof model.id === "string" && model.id) {
+      for (const key of modelMetaLookupKeys(model.id)) {
+        if (!index.has(key)) index.set(key, model);
+      }
+    }
   }
   return index;
+}
+
+export function findModelMeta(modelIndex, modelId) {
+  if (!modelIndex || typeof modelIndex.get !== "function") return null;
+  for (const key of modelMetaLookupKeys(modelId)) {
+    const meta = modelIndex.get(key);
+    if (meta) return meta;
+  }
+  return null;
 }
