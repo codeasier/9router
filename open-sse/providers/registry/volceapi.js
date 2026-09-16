@@ -1,4 +1,4 @@
-import { VOLCEAPI_API_ROOT } from "../../config/volceapi.js";
+import { VOLCEAPI_API_ROOT, VOLCEAPI_REQUEST_OVERRIDES } from "../../config/volceapi.js";
 
 const API_ROOT = VOLCEAPI_API_ROOT;
 
@@ -52,6 +52,8 @@ export default {
   // Deployment catalogs differ; custom models + passthrough are the source of truth.
   models: [],
   passthroughModels: true,
+  // Per-model body/header overrides (kimi-k3 temperature=1 — issue #20).
+  requestOverrides: VOLCEAPI_REQUEST_OVERRIDES,
   features: {
     usage: true,
     usageApikey: true,
