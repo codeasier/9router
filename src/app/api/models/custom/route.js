@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCustomModels, addCustomModel, deleteCustomModel } from "@/models";
 import { CAPACITY_META, isSttTransport } from "@/shared/constants/models";
+import { sanitizeSupportedFormats, sanitizeTargetFormat } from "open-sse/config/customModelFormats.js";
 
 export const dynamic = "force-dynamic";
 
@@ -38,13 +39,24 @@ export async function GET() {
 // POST /api/models/custom - Add custom model
 export async function POST(request) {
   try {
-    const { providerAlias, id, type, name, caps, transport } = await request.json();
+    const { providerAlias, id, type, name, caps, transport, supportedFormats, targetFormat } = await request.json();
     if (!providerAlias || !id) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
     }
     const cleanCaps = sanitizeCaps(caps);
     const cleanTransport = sanitizeTransport(transport, type || "llm");
-    const added = await addCustomModel({ providerAlias, id, type: type || "llm", name, ...(cleanCaps ? { caps: cleanCaps } : {}), ...(cleanTransport ? { transport: cleanTransport } : {}) });
+    const cleanFormats = sanitizeSupportedFormats(supportedFormats);
+    const cleanTarget = sanitizeTargetFormat(targetFormat, cleanFormats);
+    const added = await addCustomModel({
+      providerAlias,
+      id,
+      type: type || "llm",
+      name,
+      ...(cleanCaps ? { caps: cleanCaps } : {}),
+      ...(cleanTransport ? { transport: cleanTransport } : {}),
+      ...(supportedFormats !== undefined ? { supportedFormats: cleanFormats } : {}),
+      ...(targetFormat !== undefined ? { targetFormat: cleanTarget } : {}),
+    });
     return NextResponse.json({ success: true, added });
   } catch (error) {
     console.log("Error adding custom model:", error);

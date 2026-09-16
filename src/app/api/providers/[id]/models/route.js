@@ -17,6 +17,7 @@ import { resolveClineModels, resolveClinepassModels } from "open-sse/services/cl
 import { NOUS_MODELS_URL, normalizeNousModels } from "open-sse/services/nous.js";
 import { resolveCommandCodeModels } from "open-sse/services/commandcodeModels.js";
 import { CODEX_CLIENT_VERSION, CODEX_ORIGINATOR } from "open-sse/config/codex.js";
+import { VOLCEAPI_API_ROOT } from "open-sse/config/volceapi.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -318,6 +319,7 @@ const PROVIDER_MODELS_CONFIG = {
     authPrefix: "Bearer ",
     parseResponse: (data) => data.data || []
   },
+  volceapi: createOpenAIModelsConfig(`${VOLCEAPI_API_ROOT}/models`),
   "volcengine-ark": createOpenAIModelsConfig("https://ark.cn-beijing.volces.com/api/coding/v3/models"),
   byteplus: createOpenAIModelsConfig("https://ark.ap-southeast.bytepluses.com/api/coding/v3/models"),
 
