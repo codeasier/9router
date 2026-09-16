@@ -14,6 +14,7 @@ import {
 import { VOLCEAPI_API_ROOT, VOLCEAPI_DEFAULT_LIMITS } from "../../open-sse/config/volceapi.js";
 import {
   isDepletedQuotaRow,
+  filterQuotasForCard,
   parseQuotaData,
 } from "../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
@@ -148,6 +149,7 @@ describe("getUsageForProvider(volceapi)", () => {
       unlimited: true,
       budgetKind: "tokens",
     });
+    expect(usage.note).toMatch(/details/i);
     expect(usage.details.byProvider.today).toEqual([
       { provider: "火山", totalTokens: 6269803, requestCount: 118, share: 0.379 },
       { provider: "智谱", totalTokens: 5202116, requestCount: 86, share: 0.3144 },
@@ -169,6 +171,7 @@ describe("getUsageForProvider(volceapi)", () => {
     expect(usage.quotas["Tokens (today)"].used).toBe(16544347);
     expect(usage.details.estimateComplete).toBe(false);
     expect(usage.note).toMatch(/incomplete/i);
+    expect(usage.note).toMatch(/details/i);
     expect(usage.message).toBeUndefined();
   });
 
@@ -193,6 +196,7 @@ describe("parseQuotaData(volceapi)", () => {
       },
     });
     expect(rows[0]).toMatchObject({ name: "Credits (today)", budgetKind: "local-cap" });
+    expect(filterQuotasForCard("volceapi", rows).map((row) => row.name)).toEqual(["Credits (today)"]);
     expect(isDepletedQuotaRow(rows[0])).toBe(false);
     expect(isDepletedQuotaRow({ used: 99, total: 100 })).toBe(true);
   });
