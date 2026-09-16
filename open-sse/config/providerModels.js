@@ -5,6 +5,7 @@ import { PROVIDER_MODELS } from "../providers/index.js";
 import { modelQuotaFamily, modelStrip, modelTargetFormat, modelSupportedFormats, modelThinking, normalizeModelId } from "../providers/models/schema.js";
 import { CODEX_REVIEW_SUFFIX, isMuseSparkModel, opencodeFamilyFormats } from "../providers/models/helpers.js";
 import { FORMATS } from "../translator/formats.js";
+import { findCustomModelFormats } from "./customModelFormats.js";
 export { PROVIDER_MODELS };
 
 // OpenCode providers sharing the endpoint-family fallback for unknown model ids
@@ -61,30 +62,45 @@ export function findModelName(aliasOrId, modelId) {
   return found?.name || modelId;
 }
 
+function customFormatLookupAliases(aliasOrId) {
+  const extra = [aliasOrId];
+  if (PROVIDER_ID_TO_ALIAS[aliasOrId]) extra.push(PROVIDER_ID_TO_ALIAS[aliasOrId]);
+  for (const [id, alias] of Object.entries(PROVIDER_ID_TO_ALIAS)) {
+    if (alias === aliasOrId || id === aliasOrId) extra.push(id, alias);
+  }
+  return extra;
+}
+
 export function getModelTargetFormat(aliasOrId, modelId) {
   if (isOpenCodeAlias(aliasOrId) && isMuseSparkModel(modelId)) {
     return FORMATS.OPENAI_RESPONSES;
   }
   const models = PROVIDER_MODELS[aliasOrId];
-  if (!models) return null;
-  const found = findModel(models, modelId, aliasOrId);
+  const models = PROVIDER_MODELS[aliasOrId];
+  const found = models ? findModel(models, modelId, aliasOrId) : null;
   if (found) return modelTargetFormat(found);
+  // User-configured custom-model overlay wins over the family regex
+  const custom = findCustomModelFormats(aliasOrId, modelId, customFormatLookupAliases(aliasOrId))?.targetFormat || null;
+  if (custom) return custom;
   // Family fallback keeps modelsFetcher/passthrough ids on their endpoint lane
   if (isOpenCodeAlias(aliasOrId)) return opencodeFamilyFormats(modelId)?.targetFormat || null;
   return null;
 }
 
-// Declared upstream formats for a model (registry `supportedFormats`). Drives the
-// per-model guard on the sourceFormat-matched transport; null when undeclared.
-// Unknown OpenCode ids fall back to the family regex (chat lane by default) so
-// auto-fetched models never wrongly use the sourceFormat-matched transport.
+// Declared upstream formats for a model (registry `supportedFormats`, then custom
+// model overlay). Drives the per-model guard on the sourceFormat-matched transport;
+// null when undeclared. Unknown OpenCode ids fall back to the family regex (chat
+// lane by default) so auto-fetched models never wrongly use the sourceFormat-matched
+// transport.
 export function getModelSupportedFormats(aliasOrId, modelId) {
   const models = PROVIDER_MODELS[aliasOrId];
-  if (!models) return null;
-  const found = findModel(models, modelId, aliasOrId);
+  const found = models ? findModel(models, modelId, aliasOrId) : null;
   if (found) return modelSupportedFormats(found);
+  const custom = findCustomModelFormats(aliasOrId, modelId, customFormatLookupAliases(aliasOrId))?.supportedFormats || null;
+  if (custom) return custom;
   if (isOpenCodeAlias(aliasOrId)) return opencodeFamilyFormats(modelId)?.supportedFormats || [FORMATS.OPENAI];
   return null;
+}
 }
 
 // Static registry thinking default for a model (null when undeclared).
