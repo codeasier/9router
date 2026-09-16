@@ -6,6 +6,7 @@ export {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 export const QUOTA_CACHE_KEY = "quotaCacheData";
+export const QUOTA_PROVIDER_GROUPS_KEY = "quotaProviderGroupsCollapsed";
 export const REFRESH_INTERVAL_MS = 60000;
 // Claude usage/quota endpoint rate-limits; poll it less often than other providers
 export const CLAUDE_REFRESH_INTERVAL_MS = 600000;
@@ -49,6 +50,49 @@ function groupByProviderStable(connections) {
     seen.get(key).push(conn);
   }
   return Array.from(seen.values()).flat();
+}
+
+export function groupConnectionsByProvider(connections) {
+  const groups = [];
+  const index = new Map();
+  for (const conn of connections || []) {
+    const key = conn.provider || "";
+    if (!index.has(key)) {
+      const group = { provider: key, connections: [] };
+      index.set(key, group);
+      groups.push(group);
+    }
+    index.get(key).connections.push(conn);
+  }
+  return groups;
+}
+
+export function isProviderGroupCollapsed(provider, collapsedMap, options = {}) {
+  if (collapsedMap && Object.prototype.hasOwnProperty.call(collapsedMap, provider)) {
+    return collapsedMap[provider] === true;
+  }
+  if (options.onlyGroup) return false;
+  return true;
+}
+
+export function readCollapsedProviderGroups() {
+  if (typeof window === "undefined") return {};
+  try {
+    const cached = window.localStorage.getItem(QUOTA_PROVIDER_GROUPS_KEY);
+    return cached ? JSON.parse(cached) : {};
+  } catch (error) {
+    console.error("Error reading quota provider group state:", error);
+    return {};
+  }
+}
+
+export function writeCollapsedProviderGroups(collapsedMap) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(QUOTA_PROVIDER_GROUPS_KEY, JSON.stringify(collapsedMap || {}));
+  } catch (error) {
+    console.error("Error writing quota provider group state:", error);
+  }
 }
 
 export function sortVisibleConnections(
@@ -321,6 +365,27 @@ export function isDepletedQuotaRow(quota, threshold = DEPLETED_QUOTA_THRESHOLD) 
   return calculatePercentage(quota.used, quota.total) <= threshold;
 }
 
+export function isTokenUsageQuotaRow(quota) {
+  return quota?.budgetKind === "tokens";
+}
+
+export function filterQuotasForCard(provider, quotas = [], quotaVisibility = {}) {
+  return filterQuotasByVisibility(provider, quotas, quotaVisibility)
+    .filter((quota) => !isTokenUsageQuotaRow(quota));
+}
+
+export function getGroupLowestRemaining(connections, quotaData) {
+  let lowest = Number.POSITIVE_INFINITY;
+  for (const conn of connections || []) {
+    const rows = (quotaData?.[conn.id]?.quotas || []).filter((quota) => !isTokenUsageQuotaRow(quota) && quota.unlimited !== true);
+    for (const quota of rows) {
+      const remaining = getRemainingPercentage(quota);
+      if (Number.isFinite(remaining)) lowest = Math.min(lowest, remaining);
+    }
+  }
+  return Number.isFinite(lowest) && lowest !== Number.POSITIVE_INFINITY ? lowest : null;
+}
+
 export function getQuotaVisibilityKey(quota) {
   if (!quota || typeof quota !== "object") return "";
   return String(quota.modelKey || quota.name || "").trim();
@@ -354,7 +419,7 @@ export function getHiddenQuotaRows(provider, quotas = [], quotaVisibility = {}) 
   if (!Array.isArray(quotas) || quotas.length === 0) return [];
   const hidden = getProviderHiddenQuotaSet(provider, quotaVisibility, quotas);
   if (hidden.size === 0) return [];
-  return quotas.filter((quota) => hidden.has(getQuotaVisibilityKey(quota)));
+  return quotas.filter((quota) => !isTokenUsageQuotaRow(quota) && hidden.has(getQuotaVisibilityKey(quota)));
 }
 
 /**
