@@ -102,7 +102,9 @@ function VolceapiDetailsModal({ state, onClose }) {
             <span className="text-[11px] text-text-muted">
               {windowInfo.creditComplete
                 ? `Credits ${windowInfo.credit ?? 0} / local ${details.limits?.[windowKey] ?? "—"}`
-                : "Credit estimate incomplete"}
+                : windowInfo.credit != null
+                  ? `Credits ${windowInfo.credit} partial · incomplete`
+                  : "Credit estimate incomplete"}
             </span>
           </div>
           {state.note && (
