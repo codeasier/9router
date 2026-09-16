@@ -5,6 +5,7 @@ import { PROVIDER_MODELS } from "../providers/index.js";
 import { modelQuotaFamily, modelStrip, modelTargetFormat, modelSupportedFormats, modelThinking, normalizeModelId } from "../providers/models/schema.js";
 import { CODEX_REVIEW_SUFFIX, isMuseSparkModel } from "../providers/models/helpers.js";
 import { FORMATS } from "../translator/formats.js";
+import { findCustomModelFormats } from "./customModelFormats.js";
 export { PROVIDER_MODELS };
 
 
@@ -55,21 +56,33 @@ export function findModelName(aliasOrId, modelId) {
   return found?.name || modelId;
 }
 
+function customFormatLookupAliases(aliasOrId) {
+  const extra = [aliasOrId];
+  if (PROVIDER_ID_TO_ALIAS[aliasOrId]) extra.push(PROVIDER_ID_TO_ALIAS[aliasOrId]);
+  for (const [id, alias] of Object.entries(PROVIDER_ID_TO_ALIAS)) {
+    if (alias === aliasOrId || id === aliasOrId) extra.push(id, alias);
+  }
+  return extra;
+}
+
 export function getModelTargetFormat(aliasOrId, modelId) {
   if ((!aliasOrId || aliasOrId === "oc" || aliasOrId === "opencode" || aliasOrId === "ocg" || aliasOrId === "opencode-go") && isMuseSparkModel(modelId)) {
     return FORMATS.OPENAI_RESPONSES;
   }
   const models = PROVIDER_MODELS[aliasOrId];
-  if (!models) return null;
-  return modelTargetFormat(findModel(models, baseModelId(modelId), aliasOrId));
+  const fromRegistry = models ? modelTargetFormat(findModel(models, baseModelId(modelId), aliasOrId)) : null;
+  if (fromRegistry) return fromRegistry;
+  return findCustomModelFormats(aliasOrId, modelId, customFormatLookupAliases(aliasOrId))?.targetFormat || null;
 }
 
-// Declared upstream formats for a model (registry `supportedFormats`). Drives the
-// per-model guard on the sourceFormat-matched transport; null when undeclared.
+// Declared upstream formats for a model (registry `supportedFormats`, then custom
+// model overlay). Drives the per-model guard on the sourceFormat-matched transport;
+// null when undeclared (legacy: any matching transport).
 export function getModelSupportedFormats(aliasOrId, modelId) {
   const models = PROVIDER_MODELS[aliasOrId];
-  if (!models) return null;
-  return modelSupportedFormats(findModel(models, baseModelId(modelId), aliasOrId));
+  const fromRegistry = models ? modelSupportedFormats(findModel(models, baseModelId(modelId), aliasOrId)) : null;
+  if (fromRegistry) return fromRegistry;
+  return findCustomModelFormats(aliasOrId, modelId, customFormatLookupAliases(aliasOrId))?.supportedFormats || null;
 }
 
 // Static registry thinking default for a model (null when undeclared).

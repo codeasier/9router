@@ -315,6 +315,12 @@ export function getRemainingPercentage(quota) {
   return calculatePercentage(quota?.used, quota?.total);
 }
 
+export function isDepletedQuotaRow(quota, threshold = DEPLETED_QUOTA_THRESHOLD) {
+  if (!quota || quota.budgetKind === "local-cap" || quota.incomplete === true) return false;
+  if (!quota.total || quota.total <= 0) return false;
+  return calculatePercentage(quota.used, quota.total) <= threshold;
+}
+
 export function getQuotaVisibilityKey(quota) {
   if (!quota || typeof quota !== "object") return "";
   return String(quota.modelKey || quota.name || "").trim();
@@ -660,6 +666,26 @@ export function parseQuotaData(provider, data) {
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
               unlimited: quota.unlimited,
+            });
+          });
+        }
+        break;
+
+      case "volceapi":
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+              unlimited: quota.unlimited,
+              budgetKind: quota.budgetKind,
+              incomplete: quota.incomplete,
+              share: quota.share,
+              cacheHitRate: quota.cacheHitRate,
+              requestCount: quota.requestCount,
             });
           });
         }

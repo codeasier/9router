@@ -55,6 +55,14 @@ export async function handleChat(request, clientRawRequest = null) {
   const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
   if (contextMarker) body.model = modelStr;
 
+  try {
+    const { getCustomModels } = await import("@/lib/localDb");
+    const { setCustomModelFormatOverlay } = await import("open-sse/config/customModelFormats.js");
+    setCustomModelFormatOverlay(await getCustomModels());
+  } catch {
+    // Overlay is best-effort; undeclared custom models keep legacy all-transport behavior.
+  }
+
   // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
 
   // Log API key (masked)
