@@ -377,7 +377,7 @@ export function filterQuotasForCard(provider, quotas = [], quotaVisibility = {})
 export function getGroupLowestRemaining(connections, quotaData) {
   let lowest = Number.POSITIVE_INFINITY;
   for (const conn of connections || []) {
-    const rows = (quotaData?.[conn.id]?.quotas || []).filter((quota) => !isTokenUsageQuotaRow(quota) && quota.unlimited !== true);
+    const rows = (quotaData?.[conn.id]?.quotas || []).filter((quota) => !isTokenUsageQuotaRow(quota) && quota.unlimited !== true && quota.incomplete !== true);
     for (const quota of rows) {
       const remaining = getRemainingPercentage(quota);
       if (Number.isFinite(remaining)) lowest = Math.min(lowest, remaining);

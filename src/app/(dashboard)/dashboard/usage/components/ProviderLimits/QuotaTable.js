@@ -151,7 +151,10 @@ export default function QuotaTable({
       <div className="space-y-px">
         {currentPageRows.map((quota) => {
           const isUnlimited = quota.unlimited === true;
-          const colors = getColorClasses(quota.remaining);
+          const isIncomplete = quota.incomplete === true;
+          const colors = isIncomplete
+            ? { text: "text-text-muted", bg: "bg-black/20 dark:bg-white/20", bgLight: "bg-black/5 dark:bg-white/5", emoji: "⚪" }
+            : getColorClasses(quota.remaining);
           const countdown = formatResetTime(quota.resetAt);
           const resetDisplay = formatResetTimeDisplay(quota.resetAt);
           // recurring defaults true: a missing flag means the quota
@@ -159,6 +162,11 @@ export default function QuotaTable({
           // and their resetAt is a hard expiry, so word it as "expires".
           const recurring = quota.recurring !== false;
           const countdownLabel = recurring ? `in ${countdown}` : `expires in ${countdown}`;
+          const usedLabel = isUnlimited
+            ? `${quota.used.toLocaleString()} used · Unlimited`
+            : isIncomplete
+              ? `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"} · incomplete`
+              : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`;
 
           return (
             <div
@@ -175,7 +183,7 @@ export default function QuotaTable({
 
               {/* Progress + used/total */}
               <div className={`min-w-0 flex-1 ${compact ? "space-y-1" : "space-y-1.5"}`}>
-                {!isUnlimited && (
+                {!isUnlimited && !isIncomplete && (
                 <div className={`${compact ? "h-1" : "h-1.5"} rounded-full overflow-hidden border ${colors.bgLight} ${
                   quota.remaining === 0 ? "border-black/10 dark:border-white/10" : "border-transparent"
                 }`}>
@@ -189,18 +197,12 @@ export default function QuotaTable({
                 <div className={`flex items-center justify-between gap-1 min-w-0 ${compact ? "text-[10px]" : "text-xs"}`}>
                   <span
                     className="text-text-muted truncate"
-                    title={
-                      isUnlimited
-                        ? `${quota.used.toLocaleString()} used · Unlimited`
-                        : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`
-                    }
+                    title={usedLabel}
                   >
-                    {isUnlimited
-                      ? `${quota.used.toLocaleString()} used · Unlimited`
-                      : `${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`}
+                    {usedLabel}
                   </span>
-                  <span className={`font-medium ${isUnlimited ? "text-green-600 dark:text-green-400" : colors.text} shrink-0`}>
-                    {isUnlimited ? "Unlimited" : `${quota.remaining}%`}
+                  <span className={`font-medium ${isUnlimited || isIncomplete ? "text-text-muted" : colors.text} shrink-0`}>
+                    {isIncomplete ? "Incomplete" : isUnlimited ? "Unlimited" : `${quota.remaining}%`}
                   </span>
                 </div>
               </div>
