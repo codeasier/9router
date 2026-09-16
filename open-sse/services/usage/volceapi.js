@@ -13,6 +13,7 @@ import {
 } from "../../config/volceapi.js";
 import {
   estimateModelCredit,
+  findModelMeta,
   indexModelsById,
   resetAtForWindow,
   resolveVolceapiLimits,
@@ -97,12 +98,13 @@ function buildWindowDetails({ window, summary, byModel, byProvider, modelIndex }
         incompleteReasons.push(`by-model-row-${window}`);
         continue;
       }
-      const meta = modelIndex.get(modelId);
-      if (!meta) {
+      const meta = findModelMeta(modelIndex, modelId);
+      const estimated = estimateModelCredit(row, meta);
+      const usedTokens = toFiniteNumber(row.total_tokens, 0);
+      if (!meta && usedTokens > 0) {
         creditComplete = false;
         incompleteReasons.push(`model-meta-${modelId}`);
       }
-      const estimated = estimateModelCredit(row, meta);
       if (!estimated.complete) {
         creditComplete = false;
         if (estimated.reason) incompleteReasons.push(`${estimated.reason}:${modelId}`);
@@ -134,7 +136,7 @@ function buildWindowDetails({ window, summary, byModel, byProvider, modelIndex }
   return {
     window,
     tokens,
-    credit: creditComplete ? roundCredit(credit) : null,
+    credit: roundCredit(credit),
     creditComplete,
     incompleteReasons,
     resetAt: resetAtForWindow(window, date, timezone),
@@ -206,6 +208,7 @@ export async function getVolceapiUsage(apiKey = null, proxyOptions = null, provi
         credit: built.credit,
         creditComplete: built.creditComplete,
         resetAt: built.resetAt,
+        incompleteReasons: built.incompleteReasons,
       };
       details.byModel[window] = built.byModel;
       details.byProvider[window] = built.byProvider;
@@ -226,17 +229,24 @@ export async function getVolceapiUsage(apiKey = null, proxyOptions = null, provi
         };
       }
 
-      if (built.creditComplete) {
+      const hasCreditEstimate = built.creditComplete
+        || (Array.isArray(built.byModel) && built.byModel.some((row) => row.creditComplete));
+      if (hasCreditEstimate) {
         const limit = details.limits[window];
-        const used = built.credit;
-        quotas[`Credits (${label})`] = {
+        const used = Number.isFinite(built.credit) ? built.credit : 0;
+        const row = {
           used,
           total: limit,
           resetAt: built.resetAt,
-          remainingPercentage: limit > 0 ? Math.max(0, Math.round(((limit - used) / limit) * 100)) : 0,
           unlimited: false,
           budgetKind: "local-cap",
         };
+        if (built.creditComplete && limit > 0) {
+          row.remainingPercentage = Math.max(0, Math.round(((limit - used) / limit) * 100));
+        } else {
+          row.incomplete = true;
+        }
+        quotas[`Credits (${label})`] = row;
       }
     }
 
@@ -247,9 +257,12 @@ export async function getVolceapiUsage(apiKey = null, proxyOptions = null, provi
       };
     }
 
+    const incompleteWindows = VOLCEAPI_WINDOWS.filter((window) => details.windows[window] && !details.windows[window].creditComplete);
     const note = details.estimateComplete
       ? "Credits vs local caps (day 150 / week 450 / month 1000 by default). Token usage is in details — not a quota."
-      : "Credit estimate incomplete — local remaining is hidden until daily tokens and date-effective coefficients are available. Open details for token counts.";
+      : incompleteWindows.length
+        ? `Credit estimate incomplete for ${incompleteWindows.join(", ")} — remaining is hidden for those windows until daily tokens and date-effective coefficients are available.`
+        : "Credit estimate incomplete — remaining is hidden until daily tokens and date-effective coefficients are available.";
 
     return {
       plan: "火山网关",
