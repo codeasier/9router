@@ -126,7 +126,6 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./fish-audio.js";
 import p121 from "./alitp-intl.js";
 import p122 from "./xquik.js";
-import p124 from "./step-plan.js";
 import p125 from "./tokenharbor.js";
 import p126 from "./dahl.js";
 import p127 from "./atria.js";
@@ -153,6 +152,8 @@ import p155 from "./synthetic.js";
 import p156 from "./opendesign-go.js";
 import p157 from "./deeprelay.js";
 import p158 from "./qwencloud.js";
+import volceapi from "./volceapi.js";
+import stepPlan from "./step-plan.js";
 export default [
   p0,
   p1,
@@ -306,4 +307,6 @@ export default [
   p156,
   p157,
   p158,
+  volceapi,
+  stepPlan,
 ];

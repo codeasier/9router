@@ -29,38 +29,53 @@ export async function getCustomModels() {
   return Object.values(all);
 }
 
+function withProtocolMeta(record, { supportedFormats, targetFormat } = {}) {
+  const next = { ...record };
+  if (supportedFormats !== undefined) {
+    if (supportedFormats) next.supportedFormats = supportedFormats;
+    else delete next.supportedFormats;
+  }
+  if (targetFormat !== undefined) {
+    if (targetFormat) next.targetFormat = targetFormat;
+    else delete next.targetFormat;
+  }
+  return next;
+}
+
+async function refreshCustomModelFormatOverlay() {
+  try {
+    const { setCustomModelFormatOverlay } = await import("open-sse/config/customModelFormats.js");
+    setCustomModelFormatOverlay(await getCustomModels());
+  } catch { /* overlay is best-effort for routing */ }
+}
+
 // Atomic upsert inside transaction to prevent duplicate races.
-// Re-adding an existing model updates caps/name/transport without resetting omitted fields.
-export async function addCustomModel({ providerAlias, id, type = "llm", name, caps, transport, upstreamModelId }) {
+// Re-adding an existing model updates caps/name/transport/protocol without resetting omitted fields.
+export async function addCustomModel({ providerAlias, id, type = "llm", name, caps, transport, upstreamModelId, supportedFormats, targetFormat } = {}) {
   const k = customKey(providerAlias, id, type);
   const db = await getAdapter();
   const cleanUpstream = typeof upstreamModelId === "string" && upstreamModelId.trim()
     ? upstreamModelId.trim()
     : null;
   let added = false;
+  const protocolPatch = {};
+  if (supportedFormats !== undefined) protocolPatch.supportedFormats = supportedFormats;
+  if (targetFormat !== undefined) protocolPatch.targetFormat = targetFormat;
   db.transaction(() => {
     const row = db.get(`SELECT value FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
     if (row) {
       const prev = parseJson(row.value) || {};
-      const next = {
-        ...prev,
-        ...(name ? { name } : {}),
-        ...(caps ? { caps } : {}),
-        ...(transport ? { transport } : {}),
-        ...(cleanUpstream ? { upstreamModelId: cleanUpstream } : {}),
-      };
+      const next = withProtocolMeta(
+        { ...prev, ...(name ? { name } : {}), ...(caps ? { caps } : {}), ...(transport ? { transport } : {}), ...(cleanUpstream ? { upstreamModelId: cleanUpstream } : {}) },
+        protocolPatch,
+      );
       db.run(`UPDATE kv SET value = ? WHERE scope = 'customModels' AND key = ?`, [stringifyJson(next), k]);
       return;
     }
-    const value = stringifyJson({
-      providerAlias,
-      id,
-      type,
-      name: name || id,
-      ...(caps ? { caps } : {}),
-      ...(transport ? { transport } : {}),
-      ...(cleanUpstream ? { upstreamModelId: cleanUpstream } : {}),
-    });
+    const value = stringifyJson(withProtocolMeta(
+      { providerAlias, id, type, name: name || id, ...(caps ? { caps } : {}), ...(transport ? { transport } : {}), ...(cleanUpstream ? { upstreamModelId: cleanUpstream } : {}) },
+      protocolPatch,
+    ));
     db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
     added = true;
   });
@@ -68,6 +83,7 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name, ca
     const { invalidatePricingCache } = await import("./pricingRepo.js");
     invalidatePricingCache();
   } catch { /* pricing cache is optional */ }
+  await refreshCustomModelFormatOverlay();
   return added;
 }
 
@@ -77,6 +93,7 @@ export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
     const { invalidatePricingCache } = await import("./pricingRepo.js");
     invalidatePricingCache();
   } catch { /* pricing cache is optional */ }
+  await refreshCustomModelFormatOverlay();
 }
 
 // mitmAlias: key=toolName, value=mappings object

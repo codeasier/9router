@@ -21,6 +21,7 @@ import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import codexProvider from "open-sse/providers/registry/codex.js";
 import { CODEX_CLIENT_VERSION, CODEX_ORIGINATOR } from "open-sse/config/codex.js";
+import { VOLCEAPI_API_ROOT } from "open-sse/config/volceapi.js";
 
 /**
  * Fill in what the provider omitted, in the field names the pickers already read.
@@ -368,6 +369,7 @@ const PROVIDER_MODELS_CONFIG = {
     authPrefix: "Bearer ",
     parseResponse: (data) => data.data || []
   },
+  volceapi: createOpenAIModelsConfig(`${VOLCEAPI_API_ROOT}/models`),
   "volcengine-ark": createOpenAIModelsConfig("https://ark.cn-beijing.volces.com/api/coding/v3/models"),
   byteplus: createOpenAIModelsConfig("https://ark.ap-southeast.bytepluses.com/api/coding/v3/models"),
 
