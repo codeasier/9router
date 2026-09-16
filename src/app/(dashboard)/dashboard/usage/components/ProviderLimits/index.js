@@ -2,18 +2,18 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import ProviderIcon from "@/shared/components/ProviderIcon";
-import QuotaTable from "./QuotaTable";
-import Toggle from "@/shared/components/Toggle";
-import Tooltip from "@/shared/components/Tooltip";
+import ConnectionQuotaCard from "./ConnectionQuotaCard";
 import {
   parseQuotaData,
   isDepletedQuotaRow,
-  filterQuotasByVisibility,
-  getHiddenQuotaRows,
   getQuotaVisibilityKey,
   getConnectionLabel,
-  getConnectionQuotaRemaining,
   sortVisibleConnections,
+  groupConnectionsByProvider,
+  isProviderGroupCollapsed,
+  readCollapsedProviderGroups,
+  writeCollapsedProviderGroups,
+  getGroupLowestRemaining,
   buildLoadingState,
   filterQuotaStateByConnections,
   getConnectionsEmptyMessage,
@@ -42,36 +42,13 @@ import {
 } from "./utils";
 import Card from "@/shared/components/Card";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
-import { USAGE_SUPPORTED_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
+import { AI_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-
-// Maps the stored providerSpecificData.authMethod to a human label for Kiro.
-// Values come from the Kiro connect flows: builder-id/idc (device code),
-// google/github (social), imported (refresh-token paste), api_key (headless).
-const KIRO_METHOD_LABELS = {
-  "builder-id": "AWS Builder ID",
-  idc: "IAM Identity Center",
-  google: "Google",
-  github: "GitHub",
-  imported: "Imported Token",
-  api_key: "API Key",
-};
 
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
   codex: "codexAutoPing",
 };
-
-const AUTO_PING_TOOLTIPS = {
-  claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
-  codex: "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota.",
-};
-
-function kiroMethodLabel(conn) {
-  const m = conn.providerSpecificData?.authMethod;
-  if (m && KIRO_METHOD_LABELS[m]) return KIRO_METHOD_LABELS[m];
-  return conn.authType === "api_key" ? "API Key" : "OAuth";
-}
 
 function formatVolceShare(value) {
   if (!Number.isFinite(Number(value))) return "—";
@@ -85,6 +62,7 @@ function VolceapiDetailsModal({ state, onClose }) {
   const models = details.byModel?.[windowKey] || [];
   const providers = details.byProvider?.[windowKey] || [];
   const windowInfo = details.windows?.[windowKey] || {};
+  const tokens = windowInfo.tokens;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
@@ -129,6 +107,37 @@ function VolceapiDetailsModal({ state, onClose }) {
           </div>
           {state.note && (
             <p className="mb-3 text-[11px] leading-relaxed text-text-muted">{state.note}</p>
+          )}
+          {tokens && (
+            <div className="mb-4 rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.03]">
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">Tokens</h4>
+              <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                <div>
+                  <div className="text-text-muted">Total</div>
+                  <div className="font-medium text-text-primary">{Number(tokens.totalTokens || 0).toLocaleString()}</div>
+                </div>
+                <div>
+                  <div className="text-text-muted">Request</div>
+                  <div className="font-medium text-text-primary">{Number(tokens.reqTokens || 0).toLocaleString()}</div>
+                </div>
+                <div>
+                  <div className="text-text-muted">Response</div>
+                  <div className="font-medium text-text-primary">{Number(tokens.rspTokens || 0).toLocaleString()}</div>
+                </div>
+                <div>
+                  <div className="text-text-muted">Cached</div>
+                  <div className="font-medium text-text-primary">{Number(tokens.cachedTokens || 0).toLocaleString()}</div>
+                </div>
+                <div>
+                  <div className="text-text-muted">Requests</div>
+                  <div className="font-medium text-text-primary">{Number(tokens.requestCount || 0).toLocaleString()}</div>
+                </div>
+                <div>
+                  <div className="text-text-muted">Cache hit</div>
+                  <div className="font-medium text-text-primary">{formatVolceShare(tokens.cacheHitRate)}</div>
+                </div>
+              </div>
+            </div>
           )}
           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">By model (credit)</h4>
           <div className="mb-4 overflow-x-auto rounded-xl border border-black/10 dark:border-white/10">
@@ -188,57 +197,6 @@ function VolceapiDetailsModal({ state, onClose }) {
   );
 }
 
-function getConnectionSecondaryLabel(connection) {
-  if (connection.name?.trim() && connection.email?.trim() && connection.name.trim() !== connection.email.trim()) {
-    return connection.email.trim();
-  }
-
-  if (connection.name?.trim() && connection.displayName?.trim() && connection.name.trim() !== connection.displayName.trim()) {
-    return connection.displayName.trim();
-  }
-
-  return null;
-}
-
-// Region is stored for builder-id/idc/api_key flows; social and imported flows
-// omit it, so fall back to the region segment of the profileArn
-// (arn:aws:codewhisperer:<region>:...).
-function kiroRegion(conn) {
-  const r = conn.providerSpecificData?.region;
-  if (r) return r;
-  const arn = conn.providerSpecificData?.profileArn;
-  const seg = typeof arn === "string" ? arn.split(":")[3] : "";
-  return seg || "";
-}
-
-function getCodexResetCreditCount(quota) {
-  const value = quota?.raw?.resetCredits?.availableCount;
-  const count = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(count) ? Math.max(0, count) : 0;
-}
-
-const CLAUDE_RESET_LIMIT_NAMES = {
-  five_hour: "session",
-  seven_day: "weekly",
-  seven_day_overage_included: "weekly",
-  seven_day_opus: "Opus weekly",
-  seven_day_sonnet: "Sonnet weekly",
-};
-
-function formatClaudeResetClears(clears) {
-  const names = [...new Set((clears || []).map((c) => CLAUDE_RESET_LIMIT_NAMES[c]).filter(Boolean))];
-  return names.length ? `${names.join(" + ")} limits` : "limits";
-}
-
-function claudeGrantStatus(grant) {
-  if (grant.resetsLeft <= 0) return "used";
-  if (grant.paused) return "paused";
-  if (grant.endsAt && new Date(grant.endsAt).getTime() <= Date.now()) return "expired";
-  if (grant.usableNow) return "usable now";
-  if (grant.startsAt && new Date(grant.startsAt).getTime() > Date.now()) return "not started";
-  return grant.useRequiresLimit ? "at limit only" : "unavailable";
-}
-
 function providerLabel(providerId) {
   return AI_PROVIDERS[providerId]?.name || providerId;
 }
@@ -265,6 +223,46 @@ function formatTimeRemaining(value) {
   const days = Math.floor(totalHours / 24);
   const hours = totalHours % 24;
   return days > 0 ? `${days}d ${hours}h` : `${hours}h`;
+}
+
+function providerDisplayName(provider) {
+  return AI_PROVIDERS[provider]?.name || provider;
+}
+
+function ProviderQuotaGroup({ provider, accountCount, lowestRemaining, collapsed, onToggle, children }) {
+  return (
+    <section className="space-y-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        className="flex w-full items-center gap-2 rounded-xl border border-black/10 bg-black/[0.02] px-3 py-2 text-left transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/5"
+      >
+        <span className="material-symbols-outlined text-[18px] text-text-muted">
+          {collapsed ? "chevron_right" : "expand_more"}
+        </span>
+        <ProviderIcon
+          src={`/providers/${provider}.png`}
+          alt={provider}
+          size={24}
+          className="size-6 rounded-md object-contain"
+          fallbackText={provider?.slice(0, 2).toUpperCase() || "PR"}
+        />
+        <span className="min-w-0 truncate text-sm font-semibold capitalize text-text-primary">
+          {providerDisplayName(provider)}
+        </span>
+        <span className="text-xs text-text-muted">
+          {accountCount} account{accountCount === 1 ? "" : "s"}
+        </span>
+        {lowestRemaining != null && (
+          <span className="ml-auto text-xs tabular-nums text-text-muted">
+            lowest {lowestRemaining}%
+          </span>
+        )}
+      </button>
+      {!collapsed && children}
+    </section>
+  );
 }
 
 export default function ProviderLimits() {
@@ -298,6 +296,7 @@ export default function ProviderLimits() {
   const [quotaVisibility, setQuotaVisibility] = useState({});
   const [expiringFirst, setExpiringFirst] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  const [collapsedProviders, setCollapsedProviders] = useState({});
   const [bulkToggling, setBulkToggling] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(CONNECTIONS_PAGE_SIZE);
@@ -451,40 +450,29 @@ export default function ProviderLimits() {
 
   const handleResetCodexLimit = useCallback(
     async (connectionId, provider) => {
-      if ((provider !== "codex" && provider !== "claude") || resettingLimitId) return;
+      if (provider !== "codex" || resettingLimitId) return;
 
       setResettingLimitId(connectionId);
       setErrors((prev) => ({ ...prev, [connectionId]: null }));
 
       try {
-        const response = provider === "claude"
-          ? await fetch(`/api/usage/${connectionId}/claude-reset`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ grantId: quotaData[connectionId]?.raw?.resetCredits?.nextGrantId }),
-          })
-          : await fetch(`/api/usage/${connectionId}/codex-reset-credits`, { method: "POST" });
+        const response = await fetch(`/api/usage/${connectionId}/codex-reset-credits`, { method: "POST" });
         const result = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-          throw new Error(result.message || result.error || result.code || "Failed to reset limit");
+          throw new Error(result.message || result.error || result.code || "Failed to reset Codex limit");
         }
 
-        await fetchQuota(connectionId, provider, { force: true });
+        await fetchQuota(connectionId, provider);
         setLastUpdated(new Date());
       } catch (error) {
-        setErrors((prev) => ({ ...prev, [connectionId]: error.message || "Failed to reset limit" }));
+        setErrors((prev) => ({ ...prev, [connectionId]: error.message || "Failed to reset Codex limit" }));
       } finally {
         setResettingLimitId(null);
       }
     },
-    [fetchQuota, resettingLimitId, quotaData],
+    [fetchQuota, resettingLimitId],
   );
-
-  // Claude grants already arrive with the usage read; no extra fetch
-  const handleViewClaudeResets = useCallback((connection, resetCredits) => {
-    setResetCreditsState({ connection, loading: false, error: null, data: { kind: "claude", ...resetCredits } });
-  }, []);
 
   const handleViewCodexResetCredits = useCallback(async (connection) => {
     setResetCreditsState({ connection, loading: true, error: null, data: null });
@@ -687,6 +675,7 @@ export default function ProviderLimits() {
     const stored = window.localStorage.getItem(AUTO_REFRESH_STORAGE_KEY);
     setAutoRefresh(stored === null ? true : stored === "true");
     setHasHydratedAutoRefresh(true);
+    setCollapsedProviders(readCollapsedProviderGroups());
   }, []);
 
   // Persist auto-refresh preference
@@ -895,6 +884,41 @@ export default function ProviderLimits() {
       ),
     [connections, quotaData, expiringFirst, providerFilter, quotaSortMode],
   );
+  const groupedConnections = useMemo(
+    () => groupConnectionsByProvider(sortedConnections),
+    [sortedConnections],
+  );
+  const showProviderGroups = providerFilter === "all";
+
+  const updateCollapsedProviders = useCallback((nextMap) => {
+    setCollapsedProviders(nextMap);
+    writeCollapsedProviderGroups(nextMap);
+  }, []);
+
+  const toggleProviderGroup = useCallback((provider) => {
+    setCollapsedProviders((prev) => {
+      const next = {
+        ...prev,
+        [provider]: !isProviderGroupCollapsed(provider, prev, {
+          onlyGroup: groupedConnections.length === 1,
+        }),
+      };
+      writeCollapsedProviderGroups(next);
+      return next;
+    });
+  }, [groupedConnections.length]);
+
+  const expandAllProviderGroups = useCallback(() => {
+    const next = { ...collapsedProviders };
+    for (const group of groupedConnections) next[group.provider] = false;
+    updateCollapsedProviders(next);
+  }, [collapsedProviders, groupedConnections, updateCollapsedProviders]);
+
+  const collapseAllProviderGroups = useCallback(() => {
+    const next = { ...collapsedProviders };
+    for (const group of groupedConnections) next[group.provider] = true;
+    updateCollapsedProviders(next);
+  }, [collapsedProviders, groupedConnections, updateCollapsedProviders]);
 
   // Connection is depleted when any quota entry hit the threshold
   const isConnectionDepleted = (conn) => {
@@ -940,6 +964,37 @@ export default function ProviderLimits() {
       .map((c) => c.id);
     bulkSetActive(ids, true);
   };
+
+  const renderConnectionCard = (conn) => (
+    <ConnectionQuotaCard
+      key={conn.id}
+      conn={conn}
+      quota={quotaData[conn.id]}
+      isLoading={loading[conn.id]}
+      error={errors[conn.id]}
+      quotaVisibility={quotaVisibility}
+      quotaSortMode={quotaSortMode}
+      autoPingMaps={autoPingMaps}
+      copied={copied}
+      copy={copy}
+      deletingId={deletingId}
+      togglingId={togglingId}
+      resettingLimitId={resettingLimitId}
+      onResetConfirm={setResetConfirmState}
+      onViewCodexResetCredits={handleViewCodexResetCredits}
+      onToggleAutoPing={toggleAutoPing}
+      onOpenVolceapiDetails={setVolceapiDetails}
+      onRefresh={refreshProvider}
+      onEdit={(connection) => {
+        setSelectedConnection(connection);
+        setShowEditModal(true);
+      }}
+      onDelete={handleDeleteConnection}
+      onToggleActive={handleToggleConnectionActive}
+      onHideQuota={handleHideQuota}
+      onShowQuota={handleShowQuota}
+    />
+  );
 
   const selectedProviderLabel =
     providerFilter === "all" ? "All providers" : providerLabel(providerFilter);
@@ -1191,6 +1246,29 @@ export default function ProviderLimits() {
             <span className="hidden sm:inline">Expiring first</span>
           </button>
 
+          {showProviderGroups && (
+            <>
+              <button
+                type="button"
+                onClick={expandAllProviderGroups}
+                className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs text-text-primary transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5"
+                title="Expand all provider groups"
+              >
+                <span className="material-symbols-outlined text-[14px]">unfold_more</span>
+                <span className="hidden sm:inline">Expand all</span>
+              </button>
+              <button
+                type="button"
+                onClick={collapseAllProviderGroups}
+                className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs text-text-primary transition-colors hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5"
+                title="Collapse all provider groups"
+              >
+                <span className="material-symbols-outlined text-[14px]">unfold_less</span>
+                <span className="hidden sm:inline">Collapse all</span>
+              </button>
+            </>
+          )}
+
           {/* Bulk: disable depleted */}
           <button
             type="button"
@@ -1266,304 +1344,30 @@ export default function ProviderLimits() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {sortedConnections.map((conn) => {
-          const quota = quotaData[conn.id];
-          const isLoading = loading[conn.id];
-          const error = errors[conn.id];
-
-          // Use table layout for all providers
-          const isInactive = conn.isActive === false;
-          const isCodex = conn.provider === "codex";
-          const claudeReset = conn.provider === "claude" ? quota?.raw?.resetCredits : null;
-          const resetLabel = isCodex ? "Codex reset credit" : "Claude limit reset";
-          const resetCreditCount = getCodexResetCreditCount(quota);
-          const isResettingLimit = resettingLimitId === conn.id;
-          const rowBusy = deletingId === conn.id || togglingId === conn.id || isResettingLimit;
-          const rawQuotas = quota?.quotas || [];
-          const visibleQuotas = filterQuotasByVisibility(conn.provider, rawQuotas, quotaVisibility);
-          const hiddenQuotaRows = getHiddenQuotaRows(conn.provider, rawQuotas, quotaVisibility);
-
-          return (
-            <Card
-              key={conn.id}
-              padding="none"
-              className={`min-w-0 ${isInactive ? "opacity-60" : ""}`}
+      {showProviderGroups ? (
+        <div className="space-y-3">
+          {groupedConnections.map((group) => (
+            <ProviderQuotaGroup
+              key={group.provider || "unknown"}
+              provider={group.provider}
+              accountCount={group.connections.length}
+              lowestRemaining={getGroupLowestRemaining(group.connections, quotaData)}
+              collapsed={isProviderGroupCollapsed(group.provider, collapsedProviders, {
+                onlyGroup: groupedConnections.length === 1,
+              })}
+              onToggle={() => toggleProviderGroup(group.provider)}
             >
-              <div className="px-3 py-2 border-b border-black/10 dark:border-white/10">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-8 h-8 shrink-0 rounded-md flex items-center justify-center overflow-hidden">
-                      <ProviderIcon
-                        src={`/providers/${conn.provider}.png`}
-                        alt={conn.provider}
-                        size={32}
-                        className="object-contain"
-                        fallbackText={
-                          conn.provider?.slice(0, 2).toUpperCase() || "PR"
-                        }
-                      />
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="text-sm font-semibold text-text-primary truncate">
-                        {providerLabel(conn.provider)}
-                      </h3>
-                      {getConnectionLabel(conn) ? (
-                        <p className="text-xs text-text-muted truncate">
-                          {getConnectionLabel(conn)}
-                        </p>
-                      ) : null}
-                      {getConnectionSecondaryLabel(conn) ? (
-                        <p className="text-[11px] text-text-muted/80 truncate">
-                          {getConnectionSecondaryLabel(conn)}
-                        </p>
-                      ) : null}
-                      {conn.provider === "kiro" && (
-                        <div className="mt-1 flex flex-wrap items-center gap-1">
-                          <span className="rounded-full bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold text-brand-600 dark:text-brand-300">
-                            {kiroMethodLabel(conn)}
-                          </span>
-                          {kiroRegion(conn) && (
-                            <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                              {kiroRegion(conn)}
-                            </span>
-                          )}
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                              isInactive
-                                ? "bg-surface-2 text-text-muted"
-                                : conn.testStatus === "active" || conn.testStatus === "success"
-                                  ? "bg-green-500/10 text-green-600 dark:text-green-400"
-                                  : conn.testStatus === "error" || conn.testStatus === "expired" || conn.testStatus === "unavailable"
-                                    ? "bg-red-500/10 text-red-600 dark:text-red-400"
-                                    : "bg-surface-2 text-text-muted"
-                            }`}
-                          >
-                            {isInactive ? "disabled" : conn.testStatus || "unknown"}
-                          </span>
-                          {conn.providerSpecificData?.profileArn && (
-                            <button
-                              type="button"
-                              onClick={() => copy(conn.providerSpecificData.profileArn, conn.id)}
-                              title={conn.providerSpecificData.profileArn}
-                              className="inline-flex max-w-full items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-[10px] text-text-muted transition-colors hover:text-primary"
-                            >
-                              <span className="material-symbols-outlined text-[12px]">
-                                {copied === conn.id ? "check" : "content_copy"}
-                              </span>
-                              <code className="truncate font-mono">
-                                {conn.providerSpecificData.profileArn}
-                              </code>
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    {(isCodex || claudeReset) && (
-                      <>
-                        <Tooltip
-                          text={
-                            resetCreditCount > 0
-                              ? claudeReset
-                                ? `Use your reset now (${resetCreditCount} left, use by ${formatCreditDate(claudeReset.expiresAt)}) · refills ${formatClaudeResetClears(claudeReset.clears)}`
-                                : `Use one ${resetLabel}. Available: ${resetCreditCount}`
-                              : `No ${resetLabel}s available`
-                          }
-                        >
-                          <button
-                            type="button"
-                            onClick={() => setResetConfirmState({ connection: conn, resetCreditCount })}
-                            disabled={resetCreditCount <= 0 || isLoading || rowBusy}
-                            aria-label={
-                              resetCreditCount > 0
-                                ? `Use one ${resetLabel}. ${resetCreditCount} available.`
-                                : `No ${resetLabel}s available`
-                            }
-                            className={`flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary/60 disabled:cursor-not-allowed disabled:opacity-60 ${
-                              resetCreditCount > 0
-                                ? "border-primary/30 bg-primary/5 text-primary hover:bg-primary/10"
-                                : "border-black/10 bg-black/[0.02] text-text-muted dark:border-white/10 dark:bg-white/[0.03]"
-                            }`}
-                          >
-                            <span className={`material-symbols-outlined text-[15px] ${isResettingLimit ? "animate-spin" : ""}`}>
-                              {isResettingLimit ? "progress_activity" : "restart_alt"}
-                            </span>
-                            <span>{resetCreditCount}</span>
-                          </button>
-                        </Tooltip>
-                        <Tooltip text={isCodex ? "View Codex reset credit expiry" : "View Claude Code reset expiry"}>
-                          <button
-                            type="button"
-                            onClick={() => (isCodex ? handleViewCodexResetCredits(conn) : handleViewClaudeResets(conn, claudeReset))}
-                            disabled={isLoading || rowBusy}
-                            aria-label={isCodex ? "View Codex reset credit expiry" : "View Claude Code reset expiry"}
-                            className="flex h-8 w-8 items-center justify-center rounded-lg border border-black/10 text-text-muted transition-colors hover:bg-black/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:hover:bg-white/5"
-                          >
-                            <span className="material-symbols-outlined text-[17px]">schedule</span>
-                          </button>
-                        </Tooltip>
-                      </>
-                    )}
-                    {AUTO_PING_SETTINGS_KEYS[conn.provider] && conn.authType === "oauth" && (
-                      <Tooltip text={AUTO_PING_TOOLTIPS[conn.provider]}>
-                        <button
-                          type="button"
-                          onClick={() => toggleAutoPing(conn.id, conn.provider, !(autoPingMaps[conn.provider]?.[conn.id] === true))}
-                          aria-label="Toggle auto-ping"
-                          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPingMaps[conn.provider]?.[conn.id] === true ? "text-primary" : "text-text-muted"}`}
-                        >
-                          <span className="material-symbols-outlined text-[18px]">bolt</span>
-                        </button>
-                      </Tooltip>
-                    )}
-                    {conn.provider === "volceapi" && quota?.raw?.details && (
-                      <Tooltip text="View model and provider usage">
-                        <button
-                          type="button"
-                          onClick={() => setVolceapiDetails({ connection: conn, details: quota.raw.details, note: quota.raw.note })}
-                          disabled={isLoading || rowBusy}
-                          aria-label="View 火山网关 usage details"
-                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-black/10 text-text-muted transition-colors hover:bg-black/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:hover:bg-white/5"
-                        >
-                          <span className="material-symbols-outlined text-[17px]">analytics</span>
-                        </button>
-                      </Tooltip>
-                    )}
-                    <Tooltip text="Refresh quota">
-                      <button
-                        type="button"
-                        onClick={() => refreshProvider(conn.id, conn.provider)}
-                        disabled={isLoading || rowBusy}
-                        aria-label="Refresh quota"
-                        className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
-                      >
-                        <span
-                          className={`material-symbols-outlined text-[18px] text-text-muted ${isLoading ? "animate-spin" : ""}`}
-                        >
-                          refresh
-                        </span>
-                      </button>
-                    </Tooltip>
-                    <Tooltip text="Edit connection">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedConnection(conn);
-                          setShowEditModal(true);
-                        }}
-                        disabled={rowBusy}
-                        aria-label="Edit connection"
-                        className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary transition-colors disabled:opacity-50"
-                      >
-                        <span className="material-symbols-outlined text-[18px]">
-                          edit
-                        </span>
-                      </button>
-                    </Tooltip>
-                    <Tooltip text="Delete connection">
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteConnection(conn.id)}
-                        disabled={rowBusy}
-                        aria-label="Delete connection"
-                        className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-red-500/10 text-red-500 transition-colors disabled:opacity-50"
-                      >
-                        <span
-                          className={`material-symbols-outlined text-[18px] ${deletingId === conn.id ? "animate-pulse" : ""}`}
-                        >
-                          delete
-                        </span>
-                      </button>
-                    </Tooltip>
-                    <div
-                      className="inline-flex items-center pl-0.5"
-                      title={
-                        (conn.isActive ?? true)
-                          ? "Disable connection"
-                          : "Enable connection"
-                      }
-                    >
-                      <Toggle
-                        size="sm"
-                        checked={conn.isActive ?? true}
-                        disabled={rowBusy}
-                        onChange={(nextActive) =>
-                          handleToggleConnectionActive(conn.id, nextActive)
-                        }
-                      />
-                    </div>
-                  </div>
-                </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {group.connections.map(renderConnectionCard)}
               </div>
-
-              <div className="px-2 py-1.5">
-                {isLoading ? (
-                  <div className="text-center py-5 text-text-muted">
-                    <span className="material-symbols-outlined text-[28px] animate-spin">
-                      progress_activity
-                    </span>
-                  </div>
-                ) : error ? (
-                  <div className="text-center py-5">
-                    <span className="material-symbols-outlined text-[28px] text-red-500">
-                      error
-                    </span>
-                    <p className="mt-1.5 text-xs text-text-muted">{error}</p>
-                  </div>
-                ) : quota?.message ? (
-                  <div className="text-center py-5">
-                    <p className="text-xs text-text-muted">{quota.message}</p>
-                  </div>
-                ) : (
-                  <QuotaTable
-                    quotas={visibleQuotas}
-                    compact
-                    sortMode="default"
-                    showSortLabel={
-                      conn.provider === "codex" && quotaSortMode !== "default"
-                    }
-                    onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
-                  />
-                )}
-                {quota?.message && !error && !isLoading && (
-                  <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
-                    {quota.message}
-                  </p>
-                )}
-                {quota?.raw?.note && !quota?.message && !error && !isLoading && (
-                  <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
-                    {quota.raw.note}
-                  </p>
-                )}
-                {hiddenQuotaRows.length > 0 && (
-                  <div className="mt-2 flex min-w-0 items-center gap-1 border-t border-black/5 pt-2 text-[10px] text-text-muted dark:border-white/5">
-                    <span className="material-symbols-outlined shrink-0 text-[14px]">
-                      visibility_off
-                    </span>
-                    <span className="shrink-0">Hidden:</span>
-                    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap pb-2">
-                      {hiddenQuotaRows.map((quotaRow) => (
-                        <button
-                          key={getQuotaVisibilityKey(quotaRow)}
-                          type="button"
-                          onClick={() => handleShowQuota(conn.provider, quotaRow)}
-                          className="shrink-0 rounded-md border border-black/10 px-1.5 py-0.5 transition-colors hover:bg-black/5 hover:text-text-primary dark:border-white/10 dark:hover:bg-white/5"
-                          title="Show this quota row"
-                        >
-                          {quotaRow.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
+            </ProviderQuotaGroup>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {sortedConnections.map(renderConnectionCard)}
+        </div>
+      )}
 
       <div className="rounded-xl border border-black/10 bg-black/[0.02] px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1699,10 +1503,8 @@ export default function ProviderLimits() {
           await handleResetCodexLimit(connection.id, connection.provider);
           setResetConfirmState(null);
         }}
-        title={resetConfirmState?.connection?.provider === "claude" ? "Reset Claude limits?" : "Reset Codex limit?"}
-        message={resetConfirmState?.connection?.provider === "claude"
-          ? `Refills your ${formatClaudeResetClears(quotaData[resetConfirmState.connection.id]?.raw?.resetCredits?.clears)} now for ${getConnectionLabel(resetConfirmState.connection) || "this account"} · your weekly reset day stays ${formatCreditDate(quotaData[resetConfirmState.connection.id]?.raw?.resetCredits?.weeklyResetsAt)}. This cannot be undone. Resets left: ${resetConfirmState.resetCreditCount ?? 0}.`
-          : `Use 1 Codex reset credit for ${getConnectionLabel(resetConfirmState?.connection || {}) || "this account"}. This cannot be undone. Remaining credits: ${resetConfirmState?.resetCreditCount ?? 0}.`}
+        title="Reset Codex limit?"
+        message={`Use 1 Codex reset credit for ${getConnectionLabel(resetConfirmState?.connection || {}) || "this account"}. This cannot be undone. Remaining credits: ${resetConfirmState?.resetCreditCount ?? 0}.`}
         confirmText="Reset limit"
         cancelText="Cancel"
         variant="danger"
@@ -1714,11 +1516,9 @@ export default function ProviderLimits() {
           <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-black/15 bg-white shadow-2xl ring-1 ring-black/10 dark:border-white/15 dark:bg-neutral-950 dark:ring-white/10">
             <div className="flex items-start justify-between gap-3 border-b border-black/10 bg-black/[0.03] px-4 py-3 dark:border-white/10 dark:bg-white/[0.04]">
               <div className="min-w-0">
-                <h3 className="text-base font-semibold text-text-primary">
-                  {resetCreditsState.data?.kind === "claude" ? "Claude Code Limit Resets" : "Codex Reset Credit Expiry"}
-                </h3>
+                <h3 className="text-base font-semibold text-text-primary">Codex Reset Credit Expiry</h3>
                 <p className="mt-0.5 truncate text-xs text-text-muted">
-                  {getConnectionLabel(resetCreditsState.connection) || (resetCreditsState.data?.kind === "claude" ? "Claude account" : "Codex account")}
+                  {getConnectionLabel(resetCreditsState.connection) || "Codex account"}
                 </p>
               </div>
               <button
@@ -1740,42 +1540,6 @@ export default function ProviderLimits() {
               ) : resetCreditsState.error ? (
                 <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-300">
                   {resetCreditsState.error}
-                </div>
-              ) : resetCreditsState.data?.kind === "claude" && resetCreditsState.data.grants?.length ? (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between rounded-xl border border-black/10 bg-black/[0.02] px-3 py-2 text-xs text-text-muted dark:border-white/10 dark:bg-white/[0.03]">
-                    <span>{resetCreditsState.data.availableCount ?? 0} reset{resetCreditsState.data.availableCount === 1 ? "" : "s"} left</span>
-                    <span>Weekly reset day: {formatCreditDate(resetCreditsState.data.weeklyResetsAt)}</span>
-                  </div>
-                  <div className="overflow-x-auto rounded-xl border border-black/10 dark:border-white/10">
-                    <table className="w-full min-w-[560px] text-left text-sm">
-                      <thead className="bg-black/[0.03] text-xs uppercase tracking-wide text-text-muted dark:bg-white/[0.04]">
-                        <tr>
-                          <th className="px-3 py-2 font-medium">Reset</th>
-                          <th className="px-3 py-2 font-medium">Left</th>
-                          <th className="px-3 py-2 font-medium">Refills</th>
-                          <th className="px-3 py-2 font-medium">Use By</th>
-                          <th className="px-3 py-2 font-medium">Remaining</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(resetCreditsState.data.grants || []).map((grant) => (
-                          <tr key={grant.id} className="border-t border-black/5 dark:border-white/5">
-                            <td className="px-3 py-2">
-                              <div className="text-text-primary">{grant.label || grant.id}</div>
-                              <span className="mt-1 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                                {claudeGrantStatus(grant)}
-                              </span>
-                            </td>
-                            <td className="whitespace-nowrap px-3 py-2 font-medium tabular-nums text-text-primary">{grant.resetsLeft} / {grant.resetsTotal}</td>
-                            <td className="px-3 py-2 text-text-muted">{formatClaudeResetClears(grant.clears)}</td>
-                            <td className="px-3 py-2 text-text-primary">{formatCreditDate(grant.endsAt)}</td>
-                            <td className="whitespace-nowrap px-3 py-2 font-medium text-text-primary">{formatTimeRemaining(grant.endsAt)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
                 </div>
               ) : resetCreditsState.data?.credits?.length ? (
                 <div className="space-y-3">
@@ -1812,7 +1576,7 @@ export default function ProviderLimits() {
                 </div>
               ) : (
                 <div className="rounded-xl border border-black/10 bg-black/[0.02] px-3 py-8 text-center text-sm text-text-muted dark:border-white/10 dark:bg-white/[0.03]">
-                  {resetCreditsState.data?.kind === "claude" ? "No limit resets available for this account." : "No reset credit details returned for this account."}
+                  No reset credit details returned for this account.
                 </div>
               )}
             </div>
