@@ -6,6 +6,7 @@ import {
   shouldRefreshCredentials,
 } from "../services/oauthCredentialManager.js";
 import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
+import { RESPONSES_ITEM } from "../translator/schema/index.js";
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
@@ -420,7 +421,24 @@ export class CodexExecutor extends BaseExecutor {
     this._currentSessionId = resolveCacheSessionId(body, credentials);
     // Convert string input to array format (Codex API requires input as array)
     const normalized = normalizeResponsesInput(body.input);
-    if (normalized) body.input = normalized;
+    if (normalized) {
+      // normalizeResponsesInput reuses arrays; isolate items before Codex-only mutations.
+      body.input = normalized.map((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+        const copy = { ...item };
+        if (copy.type === RESPONSES_ITEM.REASONING && Array.isArray(copy.content) && copy.content.length > 0) {
+          // Codex requires empty reasoning content, unlike compatible Responses providers.
+          if (copy.summary == null || (Array.isArray(copy.summary) && copy.summary.length === 0)) {
+            const summary = copy.content
+              .filter((block) => block?.type === RESPONSES_ITEM.REASONING_TEXT && typeof block.text === "string")
+              .map((block) => ({ type: RESPONSES_ITEM.SUMMARY_TEXT, text: block.text }));
+            if (summary.length > 0) copy.summary = summary;
+          }
+          copy.content = [];
+        }
+        return copy;
+      });
+    }
 
     // Ensure input is present and non-empty (Codex API rejects empty input)
     if (!body.input || (Array.isArray(body.input) && body.input.length === 0)) {
