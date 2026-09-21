@@ -33,6 +33,7 @@ export const RESPONSES_ITEM = {
   CUSTOM_TOOL_CALL_OUTPUT: "custom_tool_call_output",
   ADDITIONAL_TOOLS: "additional_tools",
   REASONING: "reasoning",
+  REASONING_TEXT: "reasoning_text",
   OUTPUT_TEXT: "output_text",
   INPUT_TEXT: "input_text",
   INPUT_IMAGE: "input_image",
