@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCustomModels, addCustomModel, deleteCustomModel } from "@/models";
 import { CAPACITY_META, isSttTransport } from "@/shared/constants/models";
-import { sanitizeSupportedFormats, sanitizeTargetFormat } from "open-sse/config/customModelFormats.js";
+import { sanitizeSupportedFormats, sanitizeTargetFormat, sanitizeDropResponsesReasoningSummary } from "open-sse/config/customModelFormats.js";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +39,7 @@ export async function GET() {
 // POST /api/models/custom - Add custom model
 export async function POST(request) {
   try {
-    const { providerAlias, id, type, name, caps, transport, supportedFormats, targetFormat } = await request.json();
+    const { providerAlias, id, type, name, caps, transport, supportedFormats, targetFormat, dropResponsesReasoningSummary } = await request.json();
     if (!providerAlias || !id) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
     }
@@ -47,6 +47,9 @@ export async function POST(request) {
     const cleanTransport = sanitizeTransport(transport, type || "llm");
     const cleanFormats = sanitizeSupportedFormats(supportedFormats);
     const cleanTarget = sanitizeTargetFormat(targetFormat, cleanFormats);
+    const cleanDropSummary = dropResponsesReasoningSummary === undefined
+      ? undefined
+      : sanitizeDropResponsesReasoningSummary(dropResponsesReasoningSummary);
     const added = await addCustomModel({
       providerAlias,
       id,
@@ -56,6 +59,7 @@ export async function POST(request) {
       ...(cleanTransport ? { transport: cleanTransport } : {}),
       ...(supportedFormats !== undefined ? { supportedFormats: cleanFormats } : {}),
       ...(targetFormat !== undefined ? { targetFormat: cleanTarget } : {}),
+      ...(dropResponsesReasoningSummary !== undefined ? { dropResponsesReasoningSummary: cleanDropSummary } : {}),
     });
     return NextResponse.json({ success: true, added });
   } catch (error) {
