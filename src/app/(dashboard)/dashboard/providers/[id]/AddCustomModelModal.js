@@ -11,6 +11,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
   const [modelId, setModelId] = useState("");
   const [caps, setCaps] = useState(defaultCaps);
   const [selectedFormats, setSelectedFormats] = useState([]);
+  const [dropSummary, setDropSummary] = useState(false);
   const [testStatus, setTestStatus] = useState(null); // null | "testing" | "ok" | "error"
   const [testError, setTestError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -19,7 +20,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
 
   // Reset state when modal opens
   useEffect(() => {
-    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setTransport(""); setSelectedFormats([]); setTestStatus(null); setTestError(""); }
+    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setTransport(""); setSelectedFormats([]); setDropSummary(false); setTestStatus(null); setTestError(""); }
   }, [isOpen]);
 
   // Strip provider's own alias prefix (e.g. "cc/model" -> "model" for cc provider)
@@ -58,7 +59,10 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
       const formats = selectedFormats.length
         ? { supportedFormats: selectedFormats, targetFormat: selectedFormats[0] }
         : undefined;
-      await onSave(cleanId, caps, caps.stt ? transport : null, formats);
+      const options = providerAlias === "volceapi"
+        ? { dropResponsesReasoningSummary: dropSummary }
+        : {};
+      await onSave(cleanId, caps, caps.stt ? transport : null, formats, options);
     } finally {
       setSaving(false);
     }
@@ -118,6 +122,19 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
             <p className="text-xs text-text-muted mt-1">
               Leave all off to leave formats undeclared (assumes every provider transport is usable).
             </p>
+          </div>
+        )}
+
+        {providerAlias === "volceapi" && (
+          <div>
+            <label className="text-sm font-medium mb-1.5 block">Responses compatibility</label>
+            <Toggle
+              checked={dropSummary}
+              onChange={setDropSummary}
+              label="Drop reasoning.summary"
+              description="Remove reasoning.summary from /responses requests for this model."
+              size="sm"
+            />
           </div>
         )}
 
