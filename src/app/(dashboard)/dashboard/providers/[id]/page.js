@@ -623,7 +623,7 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias, caps, formats) => {
+  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias, caps, formats, options = {}) => {
     try {
       const res = await fetch("/api/models/custom", {
         method: "POST",
@@ -635,6 +635,7 @@ export default function ProviderDetailPage() {
           ...(caps ? { caps } : {}),
           ...(formats?.supportedFormats ? { supportedFormats: formats.supportedFormats } : {}),
           ...(formats?.targetFormat ? { targetFormat: formats.targetFormat } : {}),
+          ...(options.dropResponsesReasoningSummary !== undefined ? { dropResponsesReasoningSummary: options.dropResponsesReasoningSummary } : {}),
         }),
       });
       if (res.ok) {
@@ -646,6 +647,30 @@ export default function ProviderDetailPage() {
       }
     } catch (error) {
       console.log("Error adding custom model:", error);
+    }
+  };
+
+  const handleUpdateCustomModelSummary = async (modelId, dropResponsesReasoningSummary) => {
+    try {
+      const res = await fetch("/api/models/custom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerAlias: providerStorageAlias,
+          id: modelId,
+          type: "llm",
+          dropResponsesReasoningSummary,
+        }),
+      });
+      if (res.ok) {
+        await fetchCustomModels();
+        if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to update model summary setting");
+      }
+    } catch (error) {
+      console.log("Error updating model summary setting:", error);
     }
   };
 
@@ -1303,6 +1328,12 @@ export default function ProviderDetailPage() {
       builtInModels: models,
       type: "llm",
     });
+    const summaryOptions = providerId === "volceapi"
+      ? [
+          { value: "keep", label: "Summary: Keep" },
+          { value: "drop", label: "Summary: Drop" },
+        ]
+      : null;
 
     return (
       <div className="flex flex-wrap gap-3">
@@ -1330,6 +1361,9 @@ export default function ProviderDetailPage() {
             isFree={false}
             caps={getCaps(`${providerId}/${model.id}`)}
             thinkingSuffix={resolveThinkingSuffix(model.id)}
+            summaryValue={model.dropResponsesReasoningSummary ? "drop" : "keep"}
+            summaryOptions={model.source === "custom" ? summaryOptions : undefined}
+            onSummaryChange={model.source === "custom" ? (value) => handleUpdateCustomModelSummary(model.id, value === "drop") : undefined}
             {...getOverrideProps(model.id)}
           />
         ))}
@@ -2049,8 +2083,8 @@ export default function ProviderDetailPage() {
               label: transport.format === "openai" ? "chat" : transport.format === "openai-responses" ? "responses" : transport.format === "claude" ? "messages" : transport.format,
               description: transport.format,
             }))}
-          onSave={async (modelId, caps, formats) => {
-            await handleAddCustomModel(modelId, "llm", providerStorageAlias, caps, formats);
+          onSave={async (modelId, caps, formats, options) => {
+            await handleAddCustomModel(modelId, "llm", providerStorageAlias, caps, formats, options);
             setShowAddCustomModel(false);
           }}
           onClose={() => setShowAddCustomModel(false)}
