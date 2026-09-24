@@ -4,7 +4,7 @@ import { translate } from "@/i18n/runtime";
 
 const SELECT_CLASS = "rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] focus:border-primary focus:outline-none";
 
-export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, thinkingValue, thinkingOptions, onThinkingChange, protocolValue, protocolOptions, onProtocolChange }) {
+export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, thinkingValue, thinkingOptions, onThinkingChange, protocolValue, protocolOptions, onProtocolChange, summaryValue, summaryOptions, onSummaryChange }) {
   const displayModel = thinkingSuffix ? `${fullModel}(${thinkingSuffix})` : fullModel;
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
@@ -33,7 +33,7 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
             {model.name && <span className="truncate text-[9px] italic text-text-muted/70">{model.name}</span>}
             <CapacityBadges caps={caps} colorOverride="text-text-muted/70" size={12} />
           </span>
-          {(thinkingOptions?.length || protocolOptions?.length > 1) ? (
+          {(thinkingOptions?.length || protocolOptions?.length > 1 || summaryOptions?.length) ? (
             <div className="flex min-w-0 flex-wrap items-center gap-1 pl-1">
               {thinkingOptions?.length ? (
                 <select
@@ -55,6 +55,18 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
                   className={SELECT_CLASS}
                 >
                   {protocolOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              ) : null}
+              {summaryOptions?.length ? (
+                <select
+                  value={summaryValue || "keep"}
+                  onChange={(e) => onSummaryChange?.(e.target.value)}
+                  title={translate("Gateway reasoning summary")}
+                  className={SELECT_CLASS}
+                >
+                  {summaryOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
@@ -142,4 +154,10 @@ ModelRow.propTypes = {
     label: PropTypes.string.isRequired,
   })),
   onProtocolChange: PropTypes.func,
+  summaryValue: PropTypes.string,
+  summaryOptions: PropTypes.arrayOf(PropTypes.shape({
+    value: PropTypes.string.isRequired,
+    label: PropTypes.string.isRequired,
+  })),
+  onSummaryChange: PropTypes.func,
 };
