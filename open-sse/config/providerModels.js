@@ -85,6 +85,15 @@ export function getModelSupportedFormats(aliasOrId, modelId) {
   return findCustomModelFormats(aliasOrId, modelId, customFormatLookupAliases(aliasOrId))?.supportedFormats || null;
 }
 
+export function getModelDropResponsesReasoningSummary(aliasOrId, modelId) {
+  const models = PROVIDER_MODELS[aliasOrId];
+  const registryModel = models ? findModel(models, baseModelId(modelId), aliasOrId) : null;
+  if (registryModel?.dropResponsesReasoningSummary !== undefined) {
+    return registryModel.dropResponsesReasoningSummary === true;
+  }
+  return findCustomModelFormats(aliasOrId, modelId, customFormatLookupAliases(aliasOrId))?.dropResponsesReasoningSummary === true;
+}
+
 // Static registry thinking default for a model (null when undeclared).
 export function getModelThinking(aliasOrId, modelId) {
   const models = PROVIDER_MODELS[aliasOrId];

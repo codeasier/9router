@@ -9,6 +9,8 @@ import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { mergeCustomHeaders, mergeNormalizedCustomHeaders } from "../utils/customHeaders.js";
 import { applyRequestBodyOverrides, resolveRequestHeaderOverrides } from "../services/requestOverrides.js";
+import { PROVIDER_ID_TO_ALIAS, getModelDropResponsesReasoningSummary } from "../config/providerModels.js";
+import { FORMATS } from "../translator/formats.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -69,7 +71,7 @@ export class DefaultExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  transformRequest(model, body) {
+  transformRequest(model, body, stream, credentials) {
     const transformed = this.applyJsonSchemaFallback(body);
 
     if (transformed && typeof transformed === "object") {
@@ -79,6 +81,19 @@ export class DefaultExecutor extends BaseExecutor {
       }
       stripUnsupportedParams(this.provider, model, transformed);
       applyRequestBodyOverrides(transformed, this.config.requestOverrides, model);
+
+      const alias = PROVIDER_ID_TO_ALIAS[this.provider] || this.provider;
+      const dropResponsesReasoningSummary = getModelDropResponsesReasoningSummary(alias, model);
+      const targetFormat = credentials?.runtimeTransport?.format;
+      if (
+        dropResponsesReasoningSummary &&
+        targetFormat === FORMATS.OPENAI_RESPONSES &&
+        transformed.reasoning &&
+        typeof transformed.reasoning === "object"
+      ) {
+        delete transformed.reasoning.summary;
+        if (Object.keys(transformed.reasoning).length === 0) delete transformed.reasoning;
+      }
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });
