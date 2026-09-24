@@ -29,7 +29,7 @@ export async function getCustomModels() {
   return Object.values(all);
 }
 
-function withProtocolMeta(record, { supportedFormats, targetFormat } = {}) {
+function withProtocolMeta(record, { supportedFormats, targetFormat, dropResponsesReasoningSummary } = {}) {
   const next = { ...record };
   if (supportedFormats !== undefined) {
     if (supportedFormats) next.supportedFormats = supportedFormats;
@@ -38,6 +38,9 @@ function withProtocolMeta(record, { supportedFormats, targetFormat } = {}) {
   if (targetFormat !== undefined) {
     if (targetFormat) next.targetFormat = targetFormat;
     else delete next.targetFormat;
+  }
+  if (dropResponsesReasoningSummary !== undefined) {
+    next.dropResponsesReasoningSummary = dropResponsesReasoningSummary === true;
   }
   return next;
 }
@@ -51,7 +54,7 @@ async function refreshCustomModelFormatOverlay() {
 
 // Atomic upsert inside transaction to prevent duplicate races.
 // Re-adding an existing model updates caps/name/transport/protocol without resetting omitted fields.
-export async function addCustomModel({ providerAlias, id, type = "llm", name, caps, transport, upstreamModelId, supportedFormats, targetFormat } = {}) {
+export async function addCustomModel({ providerAlias, id, type = "llm", name, caps, transport, upstreamModelId, supportedFormats, targetFormat, dropResponsesReasoningSummary } = {}) {
   const k = customKey(providerAlias, id, type);
   const db = await getAdapter();
   const cleanUpstream = typeof upstreamModelId === "string" && upstreamModelId.trim()
@@ -61,6 +64,7 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name, ca
   const protocolPatch = {};
   if (supportedFormats !== undefined) protocolPatch.supportedFormats = supportedFormats;
   if (targetFormat !== undefined) protocolPatch.targetFormat = targetFormat;
+  if (dropResponsesReasoningSummary !== undefined) protocolPatch.dropResponsesReasoningSummary = dropResponsesReasoningSummary;
   db.transaction(() => {
     const row = db.get(`SELECT value FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
     if (row) {
