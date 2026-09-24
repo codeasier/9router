@@ -2,7 +2,8 @@
 // Single source of truth is the registry entry (providers/registry/codex.js
 // transport.cliVersion); appConstants re-exports it as CODEX_CLI_VERSION.
 // Official openai/codex models.json gates models by `minimal_client_version`:
-// gpt-5.6-sol/terra/luna require 0.144.0; gpt-6-astra requires 0.153.0.
+// gpt-5.6-sol/terra/luna require 0.144.0; gpt-6-astra requires 0.153.0;
+// gpt-6-sol/luna (Responses Lite) require 0.155.0.
 import { CODEX_CLI_VERSION } from "./appConstants.js";
 
 export const CODEX_ORIGINATOR = "codex_cli_rs";
