@@ -21,7 +21,7 @@ export const KNOWN_PROTOCOL_FORMATS = [
   FORMATS.OPENAI_RESPONSES,
 ];
 
-/** @type {Array<{ providerAlias: string, id: string, type?: string, supportedFormats?: string[]|null, targetFormat?: string|null }>} */
+/** @type {Array<{ providerAlias: string, id: string, type?: string, supportedFormats?: string[]|null, targetFormat?: string|null, dropResponsesReasoningSummary?: boolean }>} */
 let overlay = [];
 
 function baseModelId(modelId) {
@@ -55,6 +55,10 @@ export function sanitizeTargetFormat(value, supportedFormats = null) {
   return format;
 }
 
+export function sanitizeDropResponsesReasoningSummary(value) {
+  return value === true;
+}
+
 export function setCustomModelFormatOverlay(models) {
   overlay = Array.isArray(models) ? models.filter((model) => model && typeof model === "object") : [];
 }
@@ -74,8 +78,9 @@ export function findCustomModelFormats(aliasOrId, modelId, extraAliases = []) {
     if (model.id !== modelId && model.id !== baseId) continue;
     const supportedFormats = sanitizeSupportedFormats(model.supportedFormats);
     const targetFormat = sanitizeTargetFormat(model.targetFormat, supportedFormats);
-    if (!supportedFormats && !targetFormat) return { supportedFormats: null, targetFormat: null };
-    return { supportedFormats, targetFormat };
+    const dropResponsesReasoningSummary = sanitizeDropResponsesReasoningSummary(model.dropResponsesReasoningSummary);
+    if (!supportedFormats && !targetFormat && !dropResponsesReasoningSummary) return { supportedFormats: null, targetFormat: null };
+    return { supportedFormats, targetFormat, dropResponsesReasoningSummary };
   }
   return null;
 }
