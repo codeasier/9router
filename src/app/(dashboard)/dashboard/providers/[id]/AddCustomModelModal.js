@@ -12,6 +12,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
   const [caps, setCaps] = useState(defaultCaps);
   const [modelType, setModelType] = useState("llm");
   const [selectedFormats, setSelectedFormats] = useState([]);
+  const [dropSummary, setDropSummary] = useState(false);
   const [testStatus, setTestStatus] = useState(null); // null | "testing" | "ok" | "error"
   const [testError, setTestError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -20,7 +21,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
 
   // Reset state when modal opens
   useEffect(() => {
-    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setModelType("llm"); setTransport(""); setSelectedFormats([]); setTestStatus(null); setTestError(""); }
+    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setModelType("llm"); setTransport(""); setSelectedFormats([]); setDropSummary(false); setTestStatus(null); setTestError(""); }
   }, [isOpen]);
 
   // Strip provider's own alias prefix (e.g. "cc/model" -> "model" for cc provider)
@@ -57,7 +58,10 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
       const formats = modelType === "llm" && selectedFormats.length
         ? { supportedFormats: selectedFormats, targetFormat: selectedFormats[0] }
         : undefined;
-      await onSave(cleanId, modelType, modelType === "llm" ? caps : undefined, modelType === "stt" ? transport : null, formats);
+      const options = modelType === "llm" && providerAlias === "volceapi"
+        ? { dropResponsesReasoningSummary: dropSummary }
+        : {};
+      await onSave(cleanId, modelType, modelType === "llm" ? caps : undefined, modelType === "stt" ? transport : null, formats, options);
     } finally {
       setSaving(false);
     }
@@ -136,6 +140,19 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
             <p className="text-xs text-text-muted mt-1">
               Leave all off to leave formats undeclared (assumes every provider transport is usable).
             </p>
+          </div>
+        )}
+
+        {modelType === "llm" && providerAlias === "volceapi" && (
+          <div>
+            <label className="text-sm font-medium mb-1.5 block">Responses compatibility</label>
+            <Toggle
+              checked={dropSummary}
+              onChange={setDropSummary}
+              label="Drop reasoning.summary"
+              description="Remove reasoning.summary from /responses requests for this model."
+              size="sm"
+            />
           </div>
         )}
 

@@ -129,10 +129,12 @@ describe("custom model protocol persistence", () => {
       type: "llm",
       supportedFormats: ["openai", "claude"],
       targetFormat: "claude",
+      dropResponsesReasoningSummary: true,
     });
     const created = (await db.getCustomModels()).find((model) => model.id === "glm-5.3");
     expect(created.supportedFormats).toEqual(["openai", "claude"]);
     expect(created.targetFormat).toBe("claude");
+    expect(created.dropResponsesReasoningSummary).toBe(true);
     expect(customFormats.getCustomModelFormatOverlay().some((model) => model.id === "glm-5.3")).toBe(true);
 
     await db.addCustomModel({
@@ -141,10 +143,12 @@ describe("custom model protocol persistence", () => {
       type: "llm",
       supportedFormats: ["openai"],
       targetFormat: "openai",
+      dropResponsesReasoningSummary: false,
     });
     const updated = (await db.getCustomModels()).find((model) => model.id === "glm-5.3");
     expect(updated.supportedFormats).toEqual(["openai"]);
     expect(updated.targetFormat).toBe("openai");
+    expect(updated.dropResponsesReasoningSummary).toBe(false);
     expect(updated.name).toBe("glm-5.3");
   });
 });
