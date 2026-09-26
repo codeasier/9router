@@ -45,10 +45,12 @@ vi.mock("../../open-sse/services/tokenRefresh.js", () => ({
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
   default: vi.fn(),
   proxyAwareFetch: vi.fn(),
+  buildCredentialProxyOptions: vi.fn(() => ({})),
 }));
 
 vi.mock("../../open-sse/translator/formats/claude.js", () => ({
   normalizeClaudePassthrough: vi.fn(),
+  anchorClaudeCache: vi.fn(),
 }));
 
 vi.mock("../../open-sse/utils/toolDeduper.js", () => ({
@@ -71,6 +73,8 @@ vi.mock("../../open-sse/rtk/index.js", () => ({
 vi.mock("../../open-sse/rtk/headroom.js", () => ({
   compressWithHeadroom: vi.fn(async () => null),
   formatHeadroomLog: vi.fn(() => ""),
+  formatHeadroomSizeLog: vi.fn(() => ""),
+  isHeadroomPhantomSavings: vi.fn(() => false),
 }));
 
 vi.mock("../../open-sse/providers/capabilities.js", () => ({
