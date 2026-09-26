@@ -15,6 +15,7 @@ import {
   applyQoderContextTier,
 } from "../../open-sse/shared/qoder/contextTier.js";
 import { routableQoderModels } from "../../open-sse/services/qoderModels.js";
+import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
 
 // Shape mirrors the live /algo/api/v2/model/list entry for qmodel_38max.
 const MODEL_CONFIG = {
@@ -34,6 +35,17 @@ function promptOfTokens(n) {
   // ~4 ASCII chars per token
   return { system: "", messages: [{ role: "user", content: "abcd".repeat(n) }], tools: [] };
 }
+
+describe("Qoder opaque model capabilities", () => {
+  it.each(["qoder", "qoder-cn"])("preserves %s vision and reasoning metadata", (provider) => {
+    expect(getCapabilitiesForModel(provider, "qmodel_38max")).toMatchObject({
+      vision: true, reasoning: true, thinkingFormat: "qwen", thinkingCanDisable: false, contextWindow: 1000000,
+    });
+    expect(getCapabilitiesForModel(provider, "dfmodel")).toMatchObject({
+      vision: false, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000,
+    });
+  });
+});
 
 describe("parseTierTokenCount", () => {
   it("accepts numbers and K/M suffixed strings", () => {
