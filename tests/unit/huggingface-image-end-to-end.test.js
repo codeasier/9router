@@ -6,16 +6,21 @@
  * route calls — so the whole seam is exercised: adapter selection, buildUrl /
  * buildBody / buildHeaders, the fetch call, and the binary response parse.
  *
- * The mocked `fetch` asserts on the exact request the router would receive, which
+ * The mocked outbound fetch asserts on the exact request the router would receive, which
  * is the strongest check available without burning live Inference Providers credits
  * (the router bills before validating the payload, so a live probe can only prove
  * the path exists, never that the body is right).
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
+import { proxyAwareFetch } from "../../open-sse/utils/proxyFetch.js";
 
-const originalFetch = global.fetch;
+vi.mock("../../open-sse/utils/proxyFetch.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  proxyAwareFetch: vi.fn(),
+}));
+
 const CREDS = { apiKey: "hf_test_token" };
 
 // A 1x1 transparent PNG — enough to prove the bytes survive the round trip.
@@ -43,11 +48,7 @@ async function generate(body, model) {
 
 describe("HuggingFace image generation — end to end", () => {
   beforeEach(() => {
-    global.fetch = vi.fn().mockResolvedValue(mockBinaryResponse());
-  });
-
-  afterEach(() => {
-    global.fetch = originalFetch;
+    proxyAwareFetch.mockReset().mockResolvedValue(mockBinaryResponse());
   });
 
   it("posts a text-to-image request to the fal-ai router path", async () => {
@@ -55,7 +56,7 @@ describe("HuggingFace image generation — end to end", () => {
 
     expect(result.success).toBe(true);
 
-    const [url, init] = global.fetch.mock.calls[0];
+    const [url, init] = proxyAwareFetch.mock.calls[0];
     expect(url).toBe("https://router.huggingface.co/fal-ai/fal-ai/flux/schnell");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ inputs: "a lighthouse at dusk" });
@@ -64,14 +65,14 @@ describe("HuggingFace image generation — end to end", () => {
   it("authenticates with the connection's API key", async () => {
     await generate({ prompt: "x" }, "black-forest-labs/FLUX.1-schnell");
 
-    const [, init] = global.fetch.mock.calls[0];
+    const [, init] = proxyAwareFetch.mock.calls[0];
     expect(init.headers.Authorization).toBe("Bearer hf_test_token");
   });
 
   it("never touches the dead api-inference host", async () => {
     await generate({ prompt: "x" }, "black-forest-labs/FLUX.1-schnell");
 
-    expect(global.fetch.mock.calls[0][0]).not.toContain("api-inference.huggingface.co");
+    expect(proxyAwareFetch.mock.calls[0][0]).not.toContain("api-inference.huggingface.co");
   });
 
   it("posts an image-to-image request with the source image in inputs", async () => {
@@ -82,7 +83,7 @@ describe("HuggingFace image generation — end to end", () => {
 
     expect(result.success).toBe(true);
 
-    const [url, init] = global.fetch.mock.calls[0];
+    const [url, init] = proxyAwareFetch.mock.calls[0];
     expect(url).toBe("https://router.huggingface.co/fal-ai/fal-ai/qwen-image-edit");
     // The router takes raw base64 in inputs and the prompt under parameters —
     // the data-URL prefix must be stripped, not forwarded.
@@ -98,7 +99,7 @@ describe("HuggingFace image generation — end to end", () => {
     expect(result.success).toBe(false);
     expect(result.status).toBe(400);
     expect(result.error).toMatch(/requires a source image/i);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(proxyAwareFetch).not.toHaveBeenCalled();
   });
 
   it("rejects a model with no router mapping before calling upstream", async () => {
@@ -107,7 +108,7 @@ describe("HuggingFace image generation — end to end", () => {
     expect(result.success).toBe(false);
     expect(result.status).toBe(400);
     expect(result.error).toMatch(/no HuggingFace router mapping/i);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(proxyAwareFetch).not.toHaveBeenCalled();
   });
 
   it("returns the generated image as base64 to the client", async () => {
@@ -125,11 +126,11 @@ describe("HuggingFace image generation — end to end", () => {
       log: null,
     });
 
-    expect(global.fetch.mock.calls[0][0]).toBe("https://tgi.internal/my-org/my-tgi-model");
+    expect(proxyAwareFetch.mock.calls[0][0]).toBe("https://tgi.internal/my-org/my-tgi-model");
   });
 
   it("surfaces an upstream error instead of a broken image", async () => {
-    global.fetch = vi.fn().mockResolvedValue({
+    proxyAwareFetch.mockResolvedValue({
       ok: false,
       status: 402,
       text: async () => JSON.stringify({ error: "You have depleted your monthly included credits." }),
