@@ -1153,6 +1153,16 @@
           "scheme": "bearer"
         }
       }
+    ],
+    "requestOverrides": [
+      {
+        "models": [
+          "kimi-k3"
+        ],
+        "set": {
+          "temperature": 1
+        }
+      }
     ]
   }
 }
