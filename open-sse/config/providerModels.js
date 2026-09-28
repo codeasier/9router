@@ -76,7 +76,6 @@ export function getModelTargetFormat(aliasOrId, modelId) {
     return FORMATS.OPENAI_RESPONSES;
   }
   const models = PROVIDER_MODELS[aliasOrId];
-  const models = PROVIDER_MODELS[aliasOrId];
   const found = models ? findModel(models, modelId, aliasOrId) : null;
   if (found) return modelTargetFormat(found);
   // User-configured custom-model overlay wins over the family regex
@@ -100,7 +99,6 @@ export function getModelSupportedFormats(aliasOrId, modelId) {
   if (custom) return custom;
   if (isOpenCodeAlias(aliasOrId)) return opencodeFamilyFormats(modelId)?.supportedFormats || [FORMATS.OPENAI];
   return null;
-}
 }
 
 export function getModelDropResponsesReasoningSummary(aliasOrId, modelId) {

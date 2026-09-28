@@ -52,6 +52,34 @@ function getCodexResetCreditCount(quota) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
+export const CLAUDE_RESET_LIMIT_NAMES = {
+  five_hour: "session",
+  seven_day: "weekly",
+  seven_day_overage_included: "weekly",
+  seven_day_opus: "Opus weekly",
+  seven_day_sonnet: "Sonnet weekly",
+};
+
+export function formatClaudeResetClears(clears) {
+  const names = [...new Set((clears || []).map((c) => CLAUDE_RESET_LIMIT_NAMES[c]).filter(Boolean))];
+  return names.length ? `${names.join(" + ")} limits` : "limits";
+}
+
+export function claudeGrantStatus(grant) {
+  if (grant.resetsLeft <= 0) return "used";
+  if (grant.paused) return "paused";
+  if (grant.endsAt && new Date(grant.endsAt).getTime() <= Date.now()) return "expired";
+  if (grant.usableNow) return "usable now";
+  if (grant.startsAt && new Date(grant.startsAt).getTime() > Date.now()) return "not started";
+  return grant.useRequiresLimit ? "at limit only" : "unavailable";
+}
+
+function formatCreditDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 function getConnectionSecondaryLabel(connection) {
   if (connection.name?.trim() && connection.email?.trim() && connection.name.trim() !== connection.email.trim()) {
     return connection.email.trim();
@@ -79,6 +107,7 @@ export default function ConnectionQuotaCard({
   resettingLimitId,
   onResetConfirm,
   onViewCodexResetCredits,
+  onViewClaudeResets,
   onToggleAutoPing,
   onOpenVolceapiDetails,
   onRefresh,
@@ -90,6 +119,8 @@ export default function ConnectionQuotaCard({
 }) {
   const isInactive = conn.isActive === false;
   const isCodex = conn.provider === "codex";
+  const claudeReset = conn.provider === "claude" ? quota?.raw?.resetCredits : null;
+  const resetLabel = isCodex ? "Codex reset credit" : "Claude limit reset";
   const resetCreditCount = getCodexResetCreditCount(quota);
   const isResettingLimit = resettingLimitId === conn.id;
   const rowBusy = deletingId === conn.id || togglingId === conn.id || isResettingLimit;
@@ -176,13 +207,15 @@ export default function ConnectionQuotaCard({
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
-            {isCodex && (
+            {(isCodex || claudeReset) && (
               <>
                 <Tooltip
                   text={
                     resetCreditCount > 0
-                      ? `Use one Codex reset credit. Available: ${resetCreditCount}`
-                      : "No Codex reset credits available"
+                      ? claudeReset
+                        ? `Use your reset now (${resetCreditCount} left, use by ${formatCreditDate(claudeReset.expiresAt)}) · refills ${formatClaudeResetClears(claudeReset.clears)}`
+                        : `Use one ${resetLabel}. Available: ${resetCreditCount}`
+                      : `No ${resetLabel}s available`
                   }
                 >
                   <button
@@ -191,8 +224,8 @@ export default function ConnectionQuotaCard({
                     disabled={resetCreditCount <= 0 || isLoading || rowBusy}
                     aria-label={
                       resetCreditCount > 0
-                        ? `Use one Codex reset credit. ${resetCreditCount} available.`
-                        : "No Codex reset credits available"
+                        ? `Use one ${resetLabel}. ${resetCreditCount} available.`
+                        : `No ${resetLabel}s available`
                     }
                     className={`flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary/60 disabled:cursor-not-allowed disabled:opacity-60 ${
                       resetCreditCount > 0
@@ -206,12 +239,12 @@ export default function ConnectionQuotaCard({
                     <span>{resetCreditCount}</span>
                   </button>
                 </Tooltip>
-                <Tooltip text="View Codex reset credit expiry">
+                <Tooltip text={isCodex ? "View Codex reset credit expiry" : "View Claude Code reset expiry"}>
                   <button
                     type="button"
-                    onClick={() => onViewCodexResetCredits(conn)}
+                    onClick={() => (isCodex ? onViewCodexResetCredits(conn) : onViewClaudeResets(conn, claudeReset))}
                     disabled={isLoading || rowBusy}
-                    aria-label="View Codex reset credit expiry"
+                    aria-label={isCodex ? "View Codex reset credit expiry" : "View Claude Code reset expiry"}
                     className="flex h-8 w-8 items-center justify-center rounded-lg border border-black/10 text-text-muted transition-colors hover:bg-black/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:hover:bg-white/5"
                   >
                     <span className="material-symbols-outlined text-[17px]">schedule</span>
