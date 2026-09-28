@@ -6,9 +6,10 @@ import { getMeta, setMeta } from "../helpers/metaStore.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
-  if (key.length <= 12) return key.charAt(0) + "***";
-  // Keep the tail: keys sharing a machine-id prefix (team keys) must not collide.
-  return key.slice(0, 8) + "***" + key.slice(-4);
+  if (key.length <= 8) return key.charAt(0) + "***";
+  // Head-only mask: bucket identity is the sha256 fingerprint (getApiKeyStatsKey),
+  // so the mask never needs to disambiguate team keys sharing a machine-id prefix.
+  return key.slice(0, 8) + "***";
 }
 
 function fingerprintApiKey(key) {
