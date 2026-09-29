@@ -385,14 +385,25 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
           })
           : [];
 
-      // Only push a message block if content is non-empty.
+      // Drop empty text parts before deciding whether the message survives.
+      // A Chat Completions assistant turn that only called tools carries
+      // `content: ""`, which mapped to `{ type: "output_text", text: "" }` and is
+      // rejected by strict Responses upstreams (Volcengine Ark answers
+      // `MissingParameter: missing input.content.text`). Image parts carry no
+      // text and must be kept.
+      const usable = content.filter((part) =>
+        (part.type !== RESPONSES_ITEM.INPUT_TEXT && part.type !== RESPONSES_ITEM.OUTPUT_TEXT) ||
+        (typeof part.text === "string" && part.text.length > 0)
+      );
+
+      // Only push a message block if something survives.
       // Assistant messages with only tool_calls have content: null — skip the
       // message block in that case; the tool_calls are pushed separately below.
-      if (content.length > 0) {
+      if (usable.length > 0) {
         result.input.push({
           type: RESPONSES_ITEM.MESSAGE,
           role: msg.role,
-          content
+          content: usable
         });
       }
     }
