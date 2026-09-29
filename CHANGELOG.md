@@ -12,6 +12,7 @@
 - **Combos**: display vision adapter models in an ordered table view
 
 ## Fixes
+- **Translator**: drop empty text parts when converting Chat Completions to Responses — an assistant turn with `content: ""` (tool-call-only, as sent by opencode) serialized to `{type:"output_text", text:""}` and strict upstreams (Volcengine Ark) rejected the whole request with `MissingParameter: missing input.content.text`
 - **Claude**: decloak tool names when `toolNameMap` misses (#4342); update spoofed cli version to 2.1.280 to support Opus 5.5
 - **Providers API**: make POST `/api/providers` O(1) and refuse silent key overwrite (#4350)
 - **Capabilities**: stop caching the catalog source per module copy (#4351)
