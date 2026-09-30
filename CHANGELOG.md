@@ -6,6 +6,7 @@
 # v0.5.91 (2026-09-26)
 
 ## Features
+- **Usage**: edit 火山网关 local credit caps (day/week/month) in the usage details modal — saves the full `quotaLimits` object via PUT and refreshes remaining% in place
 - **Providers**: add Token Harbor provider and four OpenAI-compatible aggregator providers (dahl, atria, agnes, bai)
 - **Claude**: forward `x-claude-code-session-id` on OAuth requests; merge client `anthropic-beta` flags and forward rate-limit headers; return thinking text to OpenAI-format clients
 - **Codex**: add GPT-6 Sol and Luna support

@@ -1,5 +1,6 @@
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { CODEX_QUOTA_WINDOWS } from "open-sse/config/codexQuota.js";
+import { VOLCEAPI_WINDOWS } from "open-sse/config/volceapi.js";
 export {
   DEFAULT_CODEX_RESET_AUTO_USE_MINUTES,
   normalizeCodexResetAutoUseMinutes,
@@ -368,6 +369,27 @@ export function isDepletedQuotaRow(quota, threshold = DEPLETED_QUOTA_THRESHOLD) 
 
 export function isTokenUsageQuotaRow(quota) {
   return quota?.budgetKind === "tokens";
+}
+
+// ─── Volceapi local credit caps ──────────────────────────────────────────────
+// Mirrors resolveVolceapiLimits (open-sse/services/usage/volceapiCredit.js):
+// only positive finite numbers are accepted; anything else is invalid here and
+// falls back to the stored/default value on the server side.
+export function sanitizeVolceapiQuotaLimits(raw) {
+  const sanitized = {};
+  for (const key of VOLCEAPI_WINDOWS) {
+    const value = Number(raw?.[key]);
+    sanitized[key] = Number.isFinite(value) && value > 0 ? value : null;
+  }
+  return sanitized;
+}
+
+// PUT /api/providers/[id] shallow-merges providerSpecificData, so quotaLimits
+// must always be sent as one complete object — never partially.
+export function buildVolceapiQuotaLimitsPayload(raw) {
+  const sanitized = sanitizeVolceapiQuotaLimits(raw);
+  if (VOLCEAPI_WINDOWS.some((key) => sanitized[key] == null)) return null;
+  return sanitized;
 }
 
 export function filterQuotasForCard(provider, quotas = [], quotaVisibility = {}) {

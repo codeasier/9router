@@ -44,6 +44,7 @@ import Card from "@/shared/components/Card";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
 import { AI_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import VolceapiLimitsEditor from "./VolceapiLimitsEditor";
 
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
@@ -55,7 +56,7 @@ function formatVolceShare(value) {
   return `${(Number(value) * 100).toFixed(1)}%`;
 }
 
-function VolceapiDetailsModal({ state, onClose }) {
+function VolceapiDetailsModal({ state, onClose, onLimitsSaved }) {
   const [windowKey, setWindowKey] = useState("today");
   if (!state) return null;
   const details = state.details || {};
@@ -110,6 +111,11 @@ function VolceapiDetailsModal({ state, onClose }) {
           {state.note && (
             <p className="mb-3 text-[11px] leading-relaxed text-text-muted">{state.note}</p>
           )}
+          <VolceapiLimitsEditor
+            connectionId={state.connection?.id}
+            limits={details.limits}
+            onSaved={(payload) => onLimitsSaved?.(state.connection, payload)}
+          />
           {tokens && (
             <div className="mb-4 rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.03]">
               <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">Tokens</h4>
@@ -445,6 +451,22 @@ export default function ProviderLimits() {
   const refreshProvider = useCallback(
     async (connectionId, provider) => {
       await fetchQuota(connectionId, provider, { force: true });
+      setLastUpdated(new Date());
+    },
+    [fetchQuota],
+  );
+
+  // Volceapi local credit caps were saved — sync the open details modal and
+  // force a quota refresh so the card recalculates remaining% with the new caps.
+  const handleVolceapiLimitsSaved = useCallback(
+    async (connection, limits) => {
+      if (!connection?.id) return;
+      setVolceapiDetails((prev) => (
+        prev && prev.connection?.id === connection.id
+          ? { ...prev, details: { ...prev.details, limits } }
+          : prev
+      ));
+      await fetchQuota(connection.id, connection.provider, { force: true });
       setLastUpdated(new Date());
     },
     [fetchQuota],
@@ -1641,6 +1663,7 @@ export default function ProviderLimits() {
       <VolceapiDetailsModal
         state={volceapiDetails}
         onClose={() => setVolceapiDetails(null)}
+        onLimitsSaved={handleVolceapiLimitsSaved}
       />
 
       <EditConnectionModal
