@@ -138,6 +138,59 @@ describe("quota auto-ping", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("passes refreshed account identity to Codex usage without changing proxy options", async () => {
+    const connection = {
+      id: "codex-1", provider: "codex", authType: "oauth", accessToken: "old-token",
+      providerSpecificData: { chatgptAccountId: "old-account" },
+    };
+    deps.getSettings.mockResolvedValue({ codexAutoPing: { connections: { "codex-1": true } } });
+    deps.getProviderConnections.mockResolvedValue([connection]);
+    deps.refreshAndUpdateCredentials.mockResolvedValue({ connection: {
+      ...connection, accessToken: "new-token", providerSpecificData: { chatgptAccountId: "selected-account" },
+    } });
+    getCodexUsage.mockResolvedValue({ quotas: { weekly: { remaining: 66, resetAt: "2026-01-07T12:00:00.000Z" } } });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(getCodexUsage).toHaveBeenCalledWith(
+      "new-token", expect.objectContaining({ strictProxy: false }), { chatgptAccountId: "selected-account" },
+    );
+    expect(deps.getExecutor).not.toHaveBeenCalled();
+  });
+
+  it.each([86400, 604800, 2592000, 43200])("never warms a known %i-second non-5h window", async windowSeconds => {
+    deps.getSettings.mockResolvedValue({ codexAutoPing: { connections: { "codex-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "codex" ? [{ id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token" }] : []
+    ));
+    state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+    getCodexUsage.mockResolvedValue({
+      quotas: { session: { remaining: 99, windowSeconds, resetAt: "2026-01-01T17:01:00.000Z" } },
+    });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).not.toHaveBeenCalled();
+    expect(deps.updateProviderConnection).not.toHaveBeenCalled();
+  });
+
+  it("does not ping when a second normal session window is exhausted", async () => {
+    deps.getSettings.mockResolvedValue({ codexAutoPing: { connections: { "codex-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "codex" ? [{ id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token" }] : []
+    ));
+    state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+    getCodexUsage.mockResolvedValue({ quotas: {
+      session: { remaining: 99, windowSeconds: 18000, resetAt: "2026-01-01T17:01:00.000Z" },
+      session_secondary: { remaining: 0, windowSeconds: 18000, resetAt: "2026-01-01T17:01:00.000Z" },
+    } });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(deps.getExecutor).not.toHaveBeenCalled();
+    expect(deps.updateProviderConnection).not.toHaveBeenCalled();
+  });
+
   it("does not ping Codex on the first resetAt observation", async () => {
     deps.getSettings.mockResolvedValue({ codexAutoPing: { connections: { "codex-1": true } } });
     deps.getProviderConnections.mockImplementation(async ({ provider }) => (

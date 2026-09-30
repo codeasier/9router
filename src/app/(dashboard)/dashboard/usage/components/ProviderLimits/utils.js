@@ -1,4 +1,5 @@
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
+import { CODEX_QUOTA_WINDOWS } from "open-sse/config/codexQuota.js";
 export {
   DEFAULT_CODEX_RESET_AUTO_USE_MINUTES,
   normalizeCodexResetAutoUseMinutes,
@@ -592,20 +593,26 @@ export function parseQuotaData(provider, data) {
       case "codex":
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
-            let displayName = quotaType;
-            if (quotaType === "spark_session") displayName = "Spark (5h)";
-            else if (quotaType === "spark_weekly") displayName = "Spark (Weekly)";
-            else if (quotaType === "session") displayName = "5h";
-            else if (quotaType === "weekly") displayName = "Weekly";
-            else if (quotaType === "review_session") displayName = "Review (5h)";
-            else if (quotaType === "review_weekly") displayName = "Review (Weekly)";
+            const family = quotaType.startsWith("spark_") ? "Spark" : quotaType.startsWith("review_") ? "Review" : null;
+            const windowType = (family ? quotaType.slice(quotaType.indexOf("_") + 1) : quotaType).replace(/_(primary|secondary)$/, "");
+            const windowSeconds = Number(quota.windowSeconds);
+            const durationLabel = Object.values(CODEX_QUOTA_WINDOWS).find((window) => window.seconds === windowSeconds)?.label;
+            const windowLabel = durationLabel || (Number.isFinite(windowSeconds) && windowSeconds > 0
+              ? `${windowSeconds}s`
+              : CODEX_QUOTA_WINDOWS[windowType]?.label || windowType);
+            const displayName = family ? `${family} (${windowLabel})` : windowLabel;
+            // Same-duration windows need independent hide keys; single rows keep legacy name keys.
+            const sameNameRow = normalizedQuotas.find((row) => row.name === displayName);
+            if (sameNameRow) sameNameRow.modelKey = sameNameRow.quotaType;
 
             normalizedQuotas.push({
               name: displayName,
               quotaType,
+              ...(sameNameRow ? { modelKey: quotaType } : {}),
               used: quota.used || 0,
               total: quota.total || 0,
               remaining: quota.remaining,
+              windowSeconds: quota.windowSeconds ?? null,
               resetAt: quota.resetAt || null,
             });
           });
