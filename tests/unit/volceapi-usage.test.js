@@ -18,6 +18,8 @@ import {
   isDepletedQuotaRow,
   filterQuotasForCard,
   parseQuotaData,
+  buildVolceapiQuotaLimitsPayload,
+  sanitizeVolceapiQuotaLimits,
 } from "../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
 function jsonResponse(body, status = 200) {
@@ -268,5 +270,25 @@ describe("parseQuotaData(volceapi)", () => {
     expect(filterQuotasForCard("volceapi", rows).map((row) => row.name)).toEqual(["Credits (today)"]);
     expect(isDepletedQuotaRow(rows[0])).toBe(false);
     expect(isDepletedQuotaRow({ used: 99, total: 100 })).toBe(true);
+  });
+});
+
+describe("volceapi quota limit editor helpers", () => {
+  it("accepts positive finite numbers (including decimal strings) and rejects the rest", () => {
+    expect(sanitizeVolceapiQuotaLimits({ today: 300, week: "900", month: 0.5 }))
+      .toEqual({ today: 300, week: 900, month: 0.5 });
+    expect(sanitizeVolceapiQuotaLimits({ today: -1, week: 0, month: "abc" }))
+      .toEqual({ today: null, week: null, month: null });
+    expect(sanitizeVolceapiQuotaLimits({ today: "" }))
+      .toEqual({ today: null, week: null, month: null });
+    expect(sanitizeVolceapiQuotaLimits(null))
+      .toEqual({ today: null, week: null, month: null });
+  });
+
+  it("builds a payload only when every window is valid — PUT merges shallowly", () => {
+    expect(buildVolceapiQuotaLimitsPayload({ today: 300, week: 900, month: 2000 }))
+      .toEqual({ today: 300, week: 900, month: 2000 });
+    expect(buildVolceapiQuotaLimitsPayload({ today: 300, week: "", month: 2000 })).toBeNull();
+    expect(buildVolceapiQuotaLimitsPayload({})).toBeNull();
   });
 });
