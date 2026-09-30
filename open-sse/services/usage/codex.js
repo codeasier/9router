@@ -5,6 +5,7 @@
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { CODEX_RESET_CREDIT_REQUEST_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { CODEX_ORIGINATOR } from "../../config/codex.js";
+import { CODEX_QUOTA_WINDOWS } from "../../config/codexQuota.js";
 import { U, parseResetTime, toFiniteNumber } from "./shared.js";
 
 // Codex (OpenAI) API config
@@ -43,11 +44,13 @@ function getCodexRateLimitBody(snapshot) {
 
 function formatCodexWindow(window) {
   const used = Math.max(0, Math.min(100, toFiniteNumber(window?.used_percent ?? window?.percent_used, 0)));
+  const seconds = toFiniteNumber(window?.limit_window_seconds ?? window?.window_seconds ?? window?.windowSeconds, null);
   return {
     used,
     total: 100,
     remaining: Math.max(0, 100 - used),
     resetAt: parseResetTime(window?.reset_at ?? window?.resets_at ?? window?.resetAt ?? null),
+    windowSeconds: seconds > 0 ? seconds : null,
     unlimited: false,
   };
 }
@@ -60,12 +63,15 @@ function appendCodexQuotaWindows(quotas, prefix, snapshot) {
   const secondary = rateLimit.secondary_window || rateLimit.secondary || snapshot.secondary_window || snapshot.secondary;
   let added = false;
 
-  if (primary) {
-    quotas[prefix ? `${prefix}_session` : "session"] = formatCodexWindow(primary);
-    added = true;
-  }
-  if (secondary) {
-    quotas[prefix ? `${prefix}_weekly` : "weekly"] = formatCodexWindow(secondary);
+  for (const [slot, window, fallback] of [["primary", primary, "session"], ["secondary", secondary, "weekly"]]) {
+    if (!window) continue;
+    const quota = formatCodexWindow(window);
+    // A Pro account can expose a weekly (or monthly) primary instead of a 5h window.
+    const windowType = quota.windowSeconds
+      ? Object.keys(CODEX_QUOTA_WINDOWS).find((type) => CODEX_QUOTA_WINDOWS[type].seconds === quota.windowSeconds) || slot
+      : fallback;
+    const key = prefix ? `${prefix}_${windowType}` : windowType;
+    quotas[Object.hasOwn(quotas, key) ? `${key}_${slot}` : key] = quota;
     added = true;
   }
 
@@ -106,14 +112,18 @@ function getCodexSparkRateLimit(data) {
   }) || null;
 }
 
-export async function getCodexUsage(accessToken, proxyOptions = null) {
+export async function getCodexUsage(accessToken, proxyOptions = null, providerSpecificData = null) {
   try {
+    const headers = {
+      "Authorization": `Bearer ${accessToken}`,
+      "Accept": "application/json",
+    };
+    const accountId = getCodexAccountIdentity(providerSpecificData);
+    if (typeof accountId === "string" && accountId) headers["ChatGPT-Account-ID"] = accountId;
+
     const response = await proxyAwareFetch(CODEX_CONFIG.usageUrl, {
       method: "GET",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Accept": "application/json",
-      },
+      headers,
     }, proxyOptions);
 
     if (!response.ok) {
