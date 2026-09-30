@@ -1,3 +1,8 @@
+# Unreleased
+
+## Fixes
+- **Codex quota**: bind usage and auto-ping quota reads to the selected ChatGPT account, fixing inconsistent remaining percentages; preserve actual window durations and label primary/secondary windows by duration, including weekly-only Pro accounts. Never auto-ping a known non-5h window.
+
 # v0.5.91 (2026-09-26)
 
 ## Features

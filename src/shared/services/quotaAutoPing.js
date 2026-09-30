@@ -4,6 +4,7 @@ import "open-sse/index.js";
 import { getSettings, getProviderConnections, updateProviderConnection } from "@/lib/localDb";
 import { getClaudeUsage } from "open-sse/services/usage/claude.js";
 import { getCodexUsage } from "open-sse/services/usage/codex.js";
+import { CODEX_QUOTA_WINDOWS } from "open-sse/config/codexQuota.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { CLAUDE_CLI_SPOOF_HEADERS } from "open-sse/providers/shared.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
@@ -16,11 +17,11 @@ const CLAUDE_PING_URL = "https://api.anthropic.com/v1/messages?beta=true";
 
 const providerHandlers = {
   claude: {
-    getUsage: getClaudeUsage,
+    getUsage: (connection, proxyOptions) => getClaudeUsage(connection.accessToken, proxyOptions),
     sendPing: sendClaudePing,
   },
   codex: {
-    getUsage: getCodexUsage,
+    getUsage: (connection, proxyOptions) => getCodexUsage(connection.accessToken, proxyOptions, connection.providerSpecificData),
     sendPing: sendCodexPing,
   },
 };
@@ -77,6 +78,7 @@ function wasPingedRecently(connection, intervalMs, nowMs = Date.now()) {
 
 function isBlockingQuotaName(name, sessionKey) {
   if (name === sessionKey) return false;
+  if (String(name).startsWith(`${sessionKey}_`)) return true;
   return !String(name).toLowerCase().includes("session");
 }
 
@@ -208,9 +210,11 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
     return;
   }
 
-  const usage = await handler.getUsage(connection.accessToken, proxyOptions);
+  const usage = await handler.getUsage(connection, proxyOptions);
   const quotas = usage?.quotas || {};
   const quota = quotas?.[providerConfig.quotaKey];
+  const windowSeconds = toFiniteNumber(quota?.windowSeconds);
+  if (provider === "codex" && windowSeconds > 0 && windowSeconds !== CODEX_QUOTA_WINDOWS.session.seconds) return;
   const resetAt = quota?.resetAt;
   if (!resetAt) return;
 
