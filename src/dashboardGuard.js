@@ -172,6 +172,12 @@ async function hasValidToken(request) {
   return await verifyDashboardAuthToken(token);
 }
 
+// Sensitive management actions must verify credentials even when dashboard login
+// is disabled. Ordinary LLM API keys and loopback access do not grant this right.
+export async function isManagementAuthenticated(request) {
+  return await hasValidCliToken(request) || await hasValidToken(request);
+}
+
 // Read settings directly from DB to avoid self-fetch deadlock in proxy
 async function loadSettings() {
   try {
@@ -216,7 +222,7 @@ export async function proxy(request) {
 
   // Always protected - require valid JWT or local CLI token (machineId-based)
   if (ALWAYS_PROTECTED.some((p) => pathname.startsWith(p))) {
-    if (await hasValidCliToken(request) || await hasValidToken(request))
+    if (await isManagementAuthenticated(request))
       return NextResponse.next();
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

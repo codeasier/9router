@@ -7,7 +7,7 @@
 //     (done / cancel / error / lease timeout paths)
 //   * provider budget check (per-provider + "*" wildcard)
 //   * budget cache bump from usage inserts
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // Mock the key store so getPolicyForApiKey resolves without a real DB.
 let mockKeyRecord = null;
@@ -22,6 +22,11 @@ beforeEach(async () => {
   mockKeyRecord = null;
   keyPolicy = await import("@/sse/services/keyPolicy.js");
   keyPolicy._resetKeyPolicyState();
+});
+
+afterEach(() => {
+  keyPolicy?._resetKeyPolicyState();
+  vi.useRealTimers();
 });
 
 const KEY = "sk-test-key-policy";
@@ -132,7 +137,7 @@ describe("concurrency", () => {
     const body = new ReadableStream({
       start(c) { c.enqueue(new TextEncoder().encode("hello")); c.close(); },
     });
-    const wrapped = keyPolicy.wrapResponseForSlot(new Response(body), KEY);
+    const wrapped = keyPolicy.wrapResponseForSlot(new Response(body), g1);
     await wrapped.arrayBuffer();
 
     const g4 = keyPolicy.acquireSlot(KEY, policy);
@@ -141,7 +146,8 @@ describe("concurrency", () => {
 
   it("releases on cancel and is idempotent", async () => {
     const policy = { maxConcurrent: 1 };
-    expect(keyPolicy.acquireSlot(KEY, policy).ok).toBe(true);
+    const g1 = keyPolicy.acquireSlot(KEY, policy);
+    expect(g1.ok).toBe(true);
 
     let pullResolve;
     const body = new ReadableStream({
@@ -150,7 +156,7 @@ describe("concurrency", () => {
         controller.enqueue(new TextEncoder().encode("x"));
       },
     });
-    const wrapped = keyPolicy.wrapResponseForSlot(new Response(body), KEY);
+    const wrapped = keyPolicy.wrapResponseForSlot(new Response(body), g1);
 
     const reader = wrapped.body.getReader();
     await reader.read();
@@ -163,12 +169,13 @@ describe("concurrency", () => {
 
   it("releases on stream error", async () => {
     const policy = { maxConcurrent: 1 };
-    expect(keyPolicy.acquireSlot(KEY, policy).ok).toBe(true);
+    const g1 = keyPolicy.acquireSlot(KEY, policy);
+    expect(g1.ok).toBe(true);
 
     const body = new ReadableStream({
       start(c) { c.error(new Error("boom")); },
     });
-    const wrapped = keyPolicy.wrapResponseForSlot(new Response(body), KEY);
+    const wrapped = keyPolicy.wrapResponseForSlot(new Response(body), g1);
     await expect(wrapped.arrayBuffer()).rejects.toBeDefined();
 
     expect(keyPolicy.acquireSlot(KEY, policy).ok).toBe(true);
@@ -176,8 +183,9 @@ describe("concurrency", () => {
 
   it("releases immediately when response has no body", () => {
     const policy = { maxConcurrent: 1 };
-    expect(keyPolicy.acquireSlot(KEY, policy).ok).toBe(true);
-    keyPolicy.wrapResponseForSlot(new Response(null, { status: 204 }), KEY);
+    const slot = keyPolicy.acquireSlot(KEY, policy);
+    expect(slot.ok).toBe(true);
+    keyPolicy.wrapResponseForSlot(new Response(null, { status: 204 }), slot);
     expect(keyPolicy.acquireSlot(KEY, policy).ok).toBe(true);
   });
 
@@ -189,10 +197,150 @@ describe("concurrency", () => {
       status: 200,
       headers: { "Content-Type": "text/event-stream", "X-Custom": "yes" },
     });
-    const wrapped = keyPolicy.wrapResponseForSlot(src, KEY);
+    const slot = keyPolicy.acquireSlot(KEY, { maxConcurrent: 1 });
+    const wrapped = keyPolicy.wrapResponseForSlot(src, slot);
     expect(wrapped.status).toBe(200);
     expect(wrapped.headers.get("x-custom")).toBe("yes");
     await wrapped.arrayBuffer();
+  });
+});
+
+describe("request lease ownership", () => {
+  const limited = { maxConcurrent: 1 };
+  const inflight = () => global._keyPolicyState.inflight.get(KEY) || 0;
+  const openResponse = () => new Response(new ReadableStream({
+    start(c) { c.enqueue(new Uint8Array([1])); },
+  }), { headers: { "content-type": "text/event-stream" } });
+
+  it("arms the timeout at acquire even when wrap is never reached", () => {
+    vi.useFakeTimers();
+    const first = keyPolicy.acquireSlot(KEY, limited);
+    expect(inflight()).toBe(1);
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(inflight()).toBe(0);
+    const next = keyPolicy.acquireSlot(KEY, limited);
+    first.release();
+    first.release();
+    expect(inflight()).toBe(1);
+    next.release();
+    expect(inflight()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not renew the deadline when a delayed response is wrapped", async () => {
+    vi.useFakeTimers();
+    const first = keyPolicy.acquireSlot(KEY, limited);
+    vi.advanceTimersByTime(9 * 60_000);
+    const response = keyPolicy.wrapResponseForSlot(openResponse(), first);
+    vi.advanceTimersByTime(60_000);
+    expect(inflight()).toBe(0);
+    const next = keyPolicy.acquireSlot(KEY, limited);
+    await response.body.cancel();
+    expect(inflight()).toBe(1);
+    next.release();
+  });
+
+  it("preserves active slots across ordinary policy reset and cache invalidation", () => {
+    const slot = keyPolicy.acquireSlot(KEY, limited);
+    keyPolicy.resetKeyPolicyState(KEY);
+    keyPolicy.invalidateKeyPolicy(KEY);
+    expect(inflight()).toBe(1);
+    expect(keyPolicy.acquireSlot(KEY, limited).ok).toBe(false);
+    slot.release();
+    expect(inflight()).toBe(0);
+  });
+
+  it.each(["done", "cancel", "error"])("isolates old stream %s after administrative reset", async (finish) => {
+    let controller;
+    const first = keyPolicy.acquireSlot(KEY, limited);
+    const oldResponse = keyPolicy.wrapResponseForSlot(new Response(new ReadableStream({
+      start(c) { controller = c; },
+    })), first);
+    const other = keyPolicy.acquireSlot("other-key", limited);
+    expect(keyPolicy.resetKeyConcurrency(KEY)).toBe(1);
+    expect(keyPolicy.resetKeyConcurrency(KEY)).toBe(0);
+    expect(global._keyPolicyState.inflight.get("other-key")).toBe(1);
+    const next = keyPolicy.acquireSlot(KEY, limited);
+    if (finish === "cancel") await oldResponse.body.cancel();
+    if (finish === "done") { controller.close(); await oldResponse.arrayBuffer(); }
+    if (finish === "error") {
+      controller.error(new Error("old stream failed"));
+      await expect(oldResponse.arrayBuffer()).rejects.toThrow("old stream failed");
+    }
+    expect(inflight()).toBe(1);
+    expect(keyPolicy.acquireSlot(KEY, limited).ok).toBe(false);
+    next.release();
+    other.release();
+  });
+
+  it("clears lease timers on administrative reset without affecting new timers", () => {
+    vi.useFakeTimers();
+    keyPolicy.acquireSlot(KEY, limited);
+    vi.advanceTimersByTime(5 * 60_000);
+    keyPolicy.resetKeyConcurrency(KEY);
+    const next = keyPolicy.acquireSlot(KEY, limited);
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(inflight()).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+    next.release();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("releases when body reader acquisition throws during response handoff", async () => {
+    mockKeyRecord = { policy: limited };
+    const response = openResponse();
+    const reader = response.body.getReader();
+    await expect(keyPolicy.withKeyPolicy(KEY, null, async () => response)).rejects.toThrow();
+    expect(inflight()).toBe(0);
+    await reader.cancel();
+  });
+
+  it("releases callback exceptions immediately and preserves the original error", async () => {
+    mockKeyRecord = { policy: limited };
+    const failure = new Error("before response");
+    await expect(keyPolicy.withKeyPolicy(KEY, null, async () => { throw failure; })).rejects.toBe(failure);
+    expect(inflight()).toBe(0);
+    const callback = vi.fn(async () => new Response(null, { status: 204 }));
+    expect((await keyPolicy.withKeyPolicy(KEY, null, callback)).status).toBe(204);
+    expect(inflight()).toBe(0);
+  });
+
+  it("does not call the handler when admission fails", async () => {
+    mockKeyRecord = { policy: limited };
+    const first = keyPolicy.acquireSlot(KEY, limited);
+    const callback = vi.fn();
+    const response = await keyPolicy.withKeyPolicy(KEY, null, callback);
+    expect(response.status).toBe(429);
+    expect(callback).not.toHaveBeenCalled();
+    expect(inflight()).toBe(1);
+    first.release();
+  });
+
+  it("releases error responses without waiting for their bodies", async () => {
+    mockKeyRecord = { policy: limited };
+    const error = new Response("invalid", { status: 400 });
+    expect(await keyPolicy.withKeyPolicy(KEY, null, async () => error)).toBe(error);
+    expect(inflight()).toBe(0);
+  });
+
+  it("keeps a successful unconsumed stream protected until the deadline", async () => {
+    vi.useFakeTimers();
+    mockKeyRecord = { policy: limited };
+    const response = await keyPolicy.withKeyPolicy(KEY, null, async () => openResponse());
+    expect(inflight()).toBe(1);
+    vi.advanceTimersByTime(10 * 60_000 - 1);
+    expect(inflight()).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(inflight()).toBe(0);
+    await response.body.cancel();
+  });
+
+  it("leaves unrestricted responses unchanged and propagates exceptions", async () => {
+    const response = new Response("ok");
+    expect(await keyPolicy.withKeyPolicy(null, null, async () => response)).toBe(response);
+    expect(await keyPolicy.withKeyPolicy(KEY, null, async () => response)).toBe(response);
+    expect(inflight()).toBe(0);
+    await expect(keyPolicy.withKeyPolicy(null, null, async () => { throw new Error("failure"); })).rejects.toThrow("failure");
   });
 });
 
