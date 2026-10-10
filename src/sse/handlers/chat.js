@@ -25,7 +25,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
-import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { withKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 /**
  * Handle chat completion request
@@ -50,12 +50,6 @@ export async function handleChat(request, clientRawRequest = null) {
       headers: Object.fromEntries(request.headers.entries())
     };
   }
-  // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
-  // no combo, alias or provider/model pair, so it must not reach resolution.
-  // The capability travels in the anthropic-beta header, forwarded as-is.
-  const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
-  if (contextMarker) body.model = modelStr;
-
   try {
     const { getCustomModels } = await import("@/lib/localDb");
     const { setCustomModelFormatOverlay } = await import("open-sse/config/customModelFormats.js");
@@ -90,92 +84,100 @@ export async function handleChat(request, clientRawRequest = null) {
     }
   }
 
-  // Per-key policy guard: whole-key breaker + entry budgets ("*") + concurrency slot.
-  // Provider is unknown here (combo-capable model string) — per-provider budgets
-  // are re-checked inside handleSingleModelChat once resolved.
-  const policyGuard = await enforceKeyPolicy(apiKey, null);
-  if (!policyGuard.ok) {
-    return policyGuard.response;
+  // Validate after authentication but before acquiring a concurrency lease.
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Request body must be a JSON object");
   }
-
-  if (!modelStr) {
+  if (body.model === undefined || body.model === null || body.model === "") {
     log.warn("CHAT", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   }
+  if (typeof body.model !== "string" || !body.model.trim()) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Model must be a non-empty string");
+  }
+  // Claude Code's [1m] marker is an annotation, not part of the model id.
+  const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
+  if (!modelStr.trim()) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Model must be a non-empty string");
+  }
+  if (contextMarker) body.model = modelStr;
 
-  // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
-  const userAgent = request?.headers?.get("user-agent") || "";
-  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
-  if (bypassResponse) return policyGuard.wrap(bypassResponse.response || bypassResponse);
+  // Provider is unknown at entry; per-provider budgets are checked per attempt.
+  return withKeyPolicy(apiKey, null, async () => {
+    // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
+    const userAgent = request?.headers?.get("user-agent") || "";
+    const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
+    if (bypassResponse) return bypassResponse.response || bypassResponse;
 
-  const requiredCapabilities = detectRequiredCapabilities(body);
+    const requiredCapabilities = detectRequiredCapabilities(body);
 
-  // Check if model is a combo (has multiple models with fallback)
-  const comboModels = await getComboModels(modelStr);
-  if (comboModels) {
-    // Check for combo-specific strategy first, fallback to global
-    const comboStrategies = settings.comboStrategies || {};
-    const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
-    const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
-    const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
-    const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
+    // Check if model is a combo (has multiple models with fallback)
+    const comboModels = await getComboModels(modelStr);
+    if (comboModels) {
+      // Check for combo-specific strategy first, fallback to global
+      const comboStrategies = settings.comboStrategies || {};
+      const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
+      const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+      const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
+      const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
-    if (comboStrategy === "fusion") {
-      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
-      return policyGuard.wrap(await handleFusionChat({
+      if (comboStrategy === "fusion") {
+        log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
+        return await handleFusionChat({
+          body,
+          models: comboModels,
+          handleSingleModel: (b, m, isPanel) => {
+            let cleanRawReq = clientRawRequest;
+            if (isPanel && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, comboModels.length > 1);
+          },
+          log,
+          comboName: modelStr,
+          judgeModel: comboStrategies[modelStr]?.judgeModel,
+          tuning: comboStrategies[modelStr]?.fusionTuning,
+        });
+      }
+
+      const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      return await handleComboChat({
         body,
-        models: comboModels,
-        handleSingleModel: (b, m, isPanel) => {
-          let cleanRawReq = clientRawRequest;
-          if (isPanel && clientRawRequest) {
-            const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
-            cleanRawReq = { ...clientRawRequest, body: cleanBody };
-          }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, comboModels.length > 1);
-        },
+        models: augmentedModels,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, augmentedModels.length > 1),
+          adapterAdded
+        ),
         log,
         comboName: modelStr,
-        judgeModel: comboStrategies[modelStr]?.judgeModel,
-        tuning: comboStrategies[modelStr]?.fusionTuning,
-      }));
+        comboStrategy,
+        comboStickyLimit
+      });
     }
 
-    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return policyGuard.wrap(await handleComboChat({
-      body,
-      models: augmentedModels,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, augmentedModels.length > 1),
-        adapterAdded
-      ),
-      log,
-      comboName: modelStr,
-      comboStrategy,
-      comboStickyLimit
-    }));
-  }
+    // Single model request — may still switch to a capacity-adapter model if the
+    // target lacks a capability the request needs (e.g. no vision, request has an image).
+    const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
+    if (soloAugmented.length > 1) {
+      const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
+      log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
+      return await handleComboChat({
+        body,
+        models: soloAugmented,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, soloAugmented.length > 1),
+          adapterAdded
+        ),
+        log,
+        comboName: modelStr,
+        comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      });
+    }
 
-  // Single model request — may still switch to a capacity-adapter model if the
-  // target lacks a capability the request needs (e.g. no vision, request has an image).
-  const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
-  if (soloAugmented.length > 1) {
-    const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
-    log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
-    return policyGuard.wrap(await handleComboChat({
-      body,
-      models: soloAugmented,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, soloAugmented.length > 1),
-        adapterAdded
-      ),
-      log,
-      comboName: modelStr,
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
-    }));
-  }
-
-  return policyGuard.wrap(await handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey));
+    return await handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  });
 }
 
 /**

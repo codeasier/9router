@@ -16,7 +16,7 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
-import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
+import { withKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
 
 /**
  * Handle web fetch (URL extraction) request for the SSE/Next.js server.
@@ -66,56 +66,55 @@ export async function handleFetch(request) {
   }
 
   // Per-key policy guard (entry)
-  const policyGuard = await enforceKeyPolicy(apiKey, null);
-  if (!policyGuard.ok) return policyGuard.response;
+  return withKeyPolicy(apiKey, null, async () => {
+    if (!providerInput || typeof providerInput !== "string") {
+      log.warn("FETCH", "Missing provider/model");
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: provider (or model)");
+    }
 
-  if (!providerInput || typeof providerInput !== "string") {
-    log.warn("FETCH", "Missing provider/model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: provider (or model)");
-  }
+    if (!targetUrl || typeof targetUrl !== "string") {
+      log.warn("FETCH", "Missing url");
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: url");
+    }
 
-  if (!targetUrl || typeof targetUrl !== "string") {
-    log.warn("FETCH", "Missing url");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: url");
-  }
+    // Validate URL format
+    try {
+      new URL(targetUrl);
+    } catch {
+      log.warn("FETCH", "Invalid URL", { url: targetUrl });
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid URL format");
+    }
 
-  // Validate URL format
-  try {
-    new URL(targetUrl);
-  } catch {
-    log.warn("FETCH", "Invalid URL", { url: targetUrl });
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid URL format");
-  }
+    // SSRF guard: reject internal/private/metadata targets, including
+    // hostnames that merely resolve to one (DNS lookup, not just literal checks).
+    try {
+      await assertPublicUrlResolved(targetUrl);
+    } catch (err) {
+      log.warn("FETCH", "Blocked URL", { url: targetUrl });
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, err.message);
+    }
 
-  // SSRF guard: reject internal/private/metadata targets, including
-  // hostnames that merely resolve to one (DNS lookup, not just literal checks).
-  try {
-    await assertPublicUrlResolved(targetUrl);
-  } catch (err) {
-    log.warn("FETCH", "Blocked URL", { url: targetUrl });
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, err.message);
-  }
+    // Combo expansion: providerInput may be a combo name → run fallback/round-robin across providers
+    const combos = await getCombos();
+    const comboModels = getComboModelsFromData(providerInput, combos);
+    if (comboModels) {
+      const comboStrategies = settings.comboStrategies || {};
+      const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
+      const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+      log.info("FETCH", `Combo "${providerInput}" with ${comboModels.length} providers (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      return await handleComboChat({
+        body,
+        models: comboModels,
+        handleSingleModel: (b, m) => handleSingleProviderFetch(b, m, apiKey, reqUrl.pathname, requestId),
+        log,
+        comboName: providerInput,
+        comboStrategy,
+        comboStickyLimit
+      });
+    }
 
-  // Combo expansion: providerInput may be a combo name → run fallback/round-robin across providers
-  const combos = await getCombos();
-  const comboModels = getComboModelsFromData(providerInput, combos);
-  if (comboModels) {
-    const comboStrategies = settings.comboStrategies || {};
-    const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
-    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("FETCH", `Combo "${providerInput}" with ${comboModels.length} providers (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return policyGuard.wrap(await handleComboChat({
-      body,
-      models: comboModels,
-      handleSingleModel: (b, m) => handleSingleProviderFetch(b, m, apiKey, reqUrl.pathname, requestId),
-      log,
-      comboName: providerInput,
-      comboStrategy,
-      comboStickyLimit
-    }));
-  }
-
-  return policyGuard.wrap(await handleSingleProviderFetch(body, providerInput, apiKey, reqUrl.pathname, requestId));
+    return await handleSingleProviderFetch(body, providerInput, apiKey, reqUrl.pathname, requestId);
+  });
 }
 
 async function handleSingleProviderFetch(body, providerInput, apiKey, endpoint, requestId) {
