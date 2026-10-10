@@ -10,7 +10,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
-import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { withKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 // Derived from providers.js: any TTS provider not noAuth requires stored credentials
 const CREDENTIALED_PROVIDERS = new Set(
@@ -43,31 +43,30 @@ export async function handleTts(request) {
   }
 
   // Per-key policy guard (entry)
-  const policyGuard = await enforceKeyPolicy(apiKey, null);
-  if (!policyGuard.ok) return policyGuard.response;
+  return withKeyPolicy(apiKey, null, async () => {
+    if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+    if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
 
-  if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
+    // Combo expansion: model may be a combo name → run fallback/round-robin across models
+    const comboModels = await getComboModels(modelStr);
+    if (comboModels) {
+      const comboStrategies = settings.comboStrategies || {};
+      const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
+      const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+      log.info("TTS", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      return await handleComboChat({
+        body,
+        models: comboModels,
+        handleSingleModel: (b, m) => handleSingleModelTts(b, m, responseFormat, language, style, apiKey),
+        log,
+        comboName: modelStr,
+        comboStrategy,
+        comboStickyLimit,
+      });
+    }
 
-  // Combo expansion: model may be a combo name → run fallback/round-robin across models
-  const comboModels = await getComboModels(modelStr);
-  if (comboModels) {
-    const comboStrategies = settings.comboStrategies || {};
-    const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
-    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("TTS", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return policyGuard.wrap(await handleComboChat({
-      body,
-      models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelTts(b, m, responseFormat, language, style, apiKey),
-      log,
-      comboName: modelStr,
-      comboStrategy,
-      comboStickyLimit,
-    }));
-  }
-
-  return policyGuard.wrap(await handleSingleModelTts(body, modelStr, responseFormat, language, style, apiKey));
+    return await handleSingleModelTts(body, modelStr, responseFormat, language, style, apiKey);
+  });
 }
 
 async function handleSingleModelTts(body, modelStr, responseFormat, language, style, apiKey = null) {

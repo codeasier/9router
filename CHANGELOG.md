@@ -1,6 +1,7 @@
 # Unreleased
 
 ## Fixes
+- **API-key concurrency**: pair every policy-protected handler with request-token leases armed at acquisition, releasing validation errors and exceptions immediately while preserving successful stream limits; reject malformed chat bodies/models with 400 before acquisition. Add strictly authenticated, process-local `POST /api/keys/{id}/reset-concurrency` recovery without cancelling real requests or letting old responses release new slots (#25). See [recovery guidance](docs/KEY_CONCURRENCY_RESET.md).
 - **Codex quota**: bind usage and auto-ping quota reads to the selected ChatGPT account, fixing inconsistent remaining percentages; preserve actual window durations and label primary/secondary windows by duration, including weekly-only Pro accounts. Never auto-ping a known non-5h window.
 
 # v0.5.91 (2026-09-26)
