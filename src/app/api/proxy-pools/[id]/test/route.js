@@ -52,7 +52,8 @@ export async function POST(request, { params }) {
       testStatus: result.ok ? "active" : "error",
       lastTestedAt: now,
       lastError: result.ok ? null : (result.error || `Proxy test failed with status ${result.status}`),
-      isActive: result.ok,
+      // Health checks must not change administrative enablement. In particular,
+      // do not write the pre-test value back over a concurrent manual toggle.
     });
 
     return NextResponse.json({
