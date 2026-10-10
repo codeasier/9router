@@ -12,7 +12,7 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 import * as log from "../utils/logger.js";
 import { checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy.js";
-import { enforceKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { withKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
 
 // Providers requiring credentials for STT
 const CREDENTIALED_PROVIDERS = new Set(
@@ -58,10 +58,7 @@ export async function handleStt(request) {
   }
 
   // Per-key policy guard (entry)
-  const policyGuard = await enforceKeyPolicy(apiKey, null);
-  if (!policyGuard.ok) return policyGuard.response;
-
-  return policyGuard.wrap(await handleSttInner(formData, modelStr, apiKey));
+  return withKeyPolicy(apiKey, null, async () => handleSttInner(formData, modelStr, apiKey));
 }
 
 async function handleSttInner(formData, modelStr, apiKey) {

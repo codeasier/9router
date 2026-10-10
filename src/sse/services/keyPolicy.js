@@ -36,6 +36,7 @@ if (!global._keyPolicyState) {
 const state = global._keyPolicyState;
 // Preserve state created by an older hot-reloaded module in the same process.
 state.reservations ??= new Map();
+state.slotLeases ??= new Map(); // apiKey string -> Map(request token, lease timer)
 
 function pruneExpiredReservations(now) {
   for (const reservationKey of state.reservations.keys()) {
@@ -315,12 +316,13 @@ export async function checkBudget(apiKeyValue, policy, provider, now = Date.now(
 }
 
 /**
- * Try to acquire a concurrency slot. Returns { ok: true } or
- * { ok: false, status: 429, retryAfterMs: 1000, message } (fast-fail, no queue).
+ * Try to acquire a concurrency slot with a request-scoped, idempotent lease.
+ * The timeout starts here, not at response handoff: even pre-response failures
+ * cannot occupy a slot forever. Rejections fast-fail with 429 (no queue).
  */
-export function acquireSlot(apiKeyValue, policy, now = Date.now()) {
+export function acquireSlot(apiKeyValue, policy) {
   const max = policy?.maxConcurrent;
-  if (!max) return { ok: true };
+  if (!max) return { ok: true, release: () => {} };
   const cur = state.inflight.get(apiKeyValue) || 0;
   if (cur >= max) {
     return {
@@ -328,14 +330,41 @@ export function acquireSlot(apiKeyValue, policy, now = Date.now()) {
       message: `Concurrency limit reached (${cur}/${max} in-flight requests for this API key)`,
     };
   }
+  let leases = state.slotLeases.get(apiKeyValue);
+  if (!leases) {
+    leases = new Map();
+    state.slotLeases.set(apiKeyValue, leases);
+  }
+  const token = {};
+  const release = () => releaseSlot(apiKeyValue, token);
+  const timer = setTimeout(release, LEASE_MAX_MS);
+  timer.unref?.();
+  leases.set(token, timer);
   state.inflight.set(apiKeyValue, cur + 1);
-  return { ok: true };
+  return { ok: true, token, release };
 }
 
-export function releaseSlot(apiKeyValue) {
+export function releaseSlot(apiKeyValue, token) {
+  const leases = state.slotLeases.get(apiKeyValue);
+  // Old responses (after expiry/reset) must never decrement newer requests.
+  if (!leases?.has(token)) return;
+  clearTimeout(leases.get(token));
+  leases.delete(token);
+  if (leases.size === 0) state.slotLeases.delete(apiKeyValue);
   const cur = state.inflight.get(apiKeyValue) || 0;
   if (cur <= 1) state.inflight.delete(apiKeyValue);
   else state.inflight.set(apiKeyValue, cur - 1);
+}
+
+// Explicit administrative recovery, separate from ordinary policy/cache reset.
+// This forgets leases only; it does not abort real requests or broadcast to peers.
+export function resetKeyConcurrency(apiKeyValue) {
+  const clearedSlots = state.inflight.get(apiKeyValue) || 0;
+  const leases = state.slotLeases.get(apiKeyValue);
+  if (leases) for (const timer of leases.values()) clearTimeout(timer);
+  state.slotLeases.delete(apiKeyValue);
+  state.inflight.delete(apiKeyValue);
+  return clearedSlots;
 }
 
 // ─── Response helpers ────────────────────────────────────────────────────
@@ -358,26 +387,17 @@ export function policyErrorResponse({ status, message, retryAfterMs }) {
 }
 
 /**
- * Wrap a handler Response so the concurrency slot releases exactly once when
- * the client-side body finishes (done/cancel/error), with a lease-timeout
- * safety net for streams that are never consumed.
+ * Transfer a request lease to a successful response body (done/cancel/error).
+ * Error/no-body responses release immediately. The acquire-time timeout stays
+ * armed, including for a successful body that is never consumed.
  */
-export function wrapResponseForSlot(response, apiKeyValue) {
-  if (!response?.body) {
-    releaseSlot(apiKeyValue);
+export function wrapResponseForSlot(response, slot) {
+  if (!response?.body || response.status >= 400) {
+    slot.release();
     return response;
   }
 
-  let released = false;
-  const releaseOnce = () => {
-    if (released) return;
-    released = true;
-    clearTimeout(leaseTimer);
-    releaseSlot(apiKeyValue);
-  };
-  const leaseTimer = setTimeout(releaseOnce, LEASE_MAX_MS);
-  leaseTimer.unref?.();
-
+  const releaseOnce = slot.release;
   const reader = response.body.getReader();
   const stream = new ReadableStream({
     async pull(controller) {
@@ -411,6 +431,7 @@ export function wrapResponseForSlot(response, apiKeyValue) {
 export function _resetKeyPolicyState() {
   state.breaker.clear();
   state.pb.clear();
+  for (const key of state.slotLeases.keys()) resetKeyConcurrency(key);
   state.inflight.clear();
   state.budgetCache.clear();
   state.reservations.clear();
@@ -522,13 +543,14 @@ async function resolveProvider(provider) {
  * but still applies maxConcurrent.
  *
  * Returns { ok: false, response } to reject, or
- * { ok: true, policy, wrap(response) } where wrap() releases the slot when
- * the response body finishes (identity when no concurrency limit configured).
+ * { ok: true, policy, release(), wrap(response) }. Callers must release on
+ * exceptions before wrapping. Prefer withKeyPolicy() for automatic pairing.
  */
 export async function enforceKeyPolicy(apiKeyValue, provider = null, { skipBudget = false } = {}) {
-  if (!apiKeyValue) return { ok: true, policy: null, wrap: (r) => r };
+  const unrestricted = { ok: true, policy: null, release: () => {}, wrap: (r) => r };
+  if (!apiKeyValue) return unrestricted;
   const policy = await getPolicyForApiKey(apiKeyValue);
-  if (!policy) return { ok: true, policy: null, wrap: (r) => r };
+  if (!policy) return unrestricted;
 
   if (!skipBudget) {
     const providerId = await resolveProvider(provider);
@@ -547,8 +569,27 @@ export async function enforceKeyPolicy(apiKeyValue, provider = null, { skipBudge
   return {
     ok: true,
     policy,
-    wrap: (response) => (needsWrap ? wrapResponseForSlot(response, apiKeyValue) : response),
+    release: slot.release,
+    wrap: (response) => (needsWrap ? wrapResponseForSlot(response, slot) : response),
   };
+}
+
+/**
+ * Own the entry lease until a response is handed off. Failed callbacks and
+ * wrapper construction errors release in finally; successful SSE bodies keep
+ * their lease until done/cancel/error or the acquire-time deadline.
+ */
+export async function withKeyPolicy(apiKeyValue, provider, handler, options = {}) {
+  const guard = await enforceKeyPolicy(apiKeyValue, provider, options);
+  if (!guard.ok) return guard.response;
+  let handedOff = false;
+  try {
+    const response = guard.wrap(await handler(guard));
+    handedOff = true;
+    return response;
+  } finally {
+    if (!handedOff) guard.release();
+  }
 }
 
 /**
