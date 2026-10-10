@@ -16,7 +16,7 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
 import { getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAccess.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
-import { enforceKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
+import { withKeyPolicy, evaluateProviderBudget } from "../services/keyPolicy.js";
 
 /**
  * Handle web search request for the SSE/Next.js server.
@@ -64,44 +64,43 @@ export async function handleSearch(request) {
   }
 
   // Per-key policy guard (entry)
-  const policyGuard = await enforceKeyPolicy(apiKey, null);
-  if (!policyGuard.ok) return policyGuard.response;
+  return withKeyPolicy(apiKey, null, async () => {
+    if (!providerInput || typeof providerInput !== "string") {
+      log.warn("SEARCH", "Missing provider/model");
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: provider (or model)");
+    }
 
-  if (!providerInput || typeof providerInput !== "string") {
-    log.warn("SEARCH", "Missing provider/model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: provider (or model)");
-  }
+    if (!query || typeof query !== "string" || !query.trim()) {
+      log.warn("SEARCH", "Missing query");
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: query");
+    }
 
-  if (!query || typeof query !== "string" || !query.trim()) {
-    log.warn("SEARCH", "Missing query");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: query");
-  }
+    // Combo expansion: providerInput may be a combo name → run fallback/round-robin across providers
+    const combos = await getCombos();
+    const comboModels = getComboModelsFromData(providerInput, combos);
 
-  // Combo expansion: providerInput may be a combo name → run fallback/round-robin across providers
-  const combos = await getCombos();
-  const comboModels = getComboModelsFromData(providerInput, combos);
+    // Per-key access control: the provider IS the model here, so a
+    // restricted key needs the provider id (or the combo) on its list.
+    const keyAccessDenied = await enforceKeyAccessProvider(await getKeyAccessContext(request), providerInput, comboModels);
+    if (keyAccessDenied) return keyAccessDenied;
+    if (comboModels) {
+      const comboStrategies = settings.comboStrategies || {};
+      const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
+      const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+      log.info("SEARCH", `Combo "${providerInput}" with ${comboModels.length} providers (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      return await handleComboChat({
+        body,
+        models: comboModels,
+        handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, apiKey, url.pathname, requestId),
+        log,
+        comboName: providerInput,
+        comboStrategy,
+        comboStickyLimit
+      });
+    }
 
-  // Per-key access control: the provider IS the model here, so a
-  // restricted key needs the provider id (or the combo) on its list.
-  const keyAccessDenied = await enforceKeyAccessProvider(await getKeyAccessContext(request), providerInput, comboModels);
-  if (keyAccessDenied) return keyAccessDenied;
-  if (comboModels) {
-    const comboStrategies = settings.comboStrategies || {};
-    const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
-    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("SEARCH", `Combo "${providerInput}" with ${comboModels.length} providers (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return policyGuard.wrap(await handleComboChat({
-      body,
-      models: comboModels,
-      handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, apiKey, url.pathname, requestId),
-      log,
-      comboName: providerInput,
-      comboStrategy,
-      comboStickyLimit
-    }));
-  }
-
-  return policyGuard.wrap(await handleSingleProviderSearch(body, providerInput, apiKey, url.pathname, requestId));
+    return await handleSingleProviderSearch(body, providerInput, apiKey, url.pathname, requestId);
+  });
 }
 
 async function handleSingleProviderSearch(body, providerInput, apiKey, endpoint, requestId) {
