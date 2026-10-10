@@ -1,5 +1,24 @@
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 
+const RESPONSES_MESSAGE_ROLES = new Set([ROLE.USER, ROLE.ASSISTANT, ROLE.SYSTEM, ROLE.DEVELOPER]);
+
+/**
+ * Make the optional message discriminator explicit for strict Responses upstreams.
+ * Preserve content blocks and all explicitly typed items, including tool/reasoning
+ * history. Copy changed items instead of mutating a caller's shared conversation.
+ */
+export function normalizeResponsesMessageTypes(input) {
+  if (!Array.isArray(input)) return input;
+  return input.map((item) => {
+    if (
+      !item || typeof item !== "object" || Array.isArray(item) ||
+      item.type !== undefined || !RESPONSES_MESSAGE_ROLES.has(item.role) ||
+      (typeof item.content !== "string" && !Array.isArray(item.content))
+    ) return item;
+    return { ...item, type: RESPONSES_ITEM.MESSAGE };
+  });
+}
+
 /**
  * Normalize Responses API input to array format.
  * Accepts string or array, returns array of message items.
