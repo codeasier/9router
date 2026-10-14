@@ -86,6 +86,21 @@ describe("GET /v1/models combo-only catalog (#17)", () => {
     expect(body).toEqual({ object: "list", data: [] });
   });
 
+  it("publishes configured combo properties and reflects updates immediately", async () => {
+    const combo = { name: "vip", models: ["cx/gpt-5.6-sol"], capabilities: {
+      contextWindow: 1000000, maxOutput: 128000, vision: false, audioInput: true,
+      reasoning: true, thinkingLevels: ["low", "high"],
+    } };
+    dbMocks.getCombos.mockResolvedValue([combo]);
+    let body = await (await GET()).json();
+    expect(body.data[0].capabilities).toMatchObject(combo.capabilities);
+    dbMocks.getCombos.mockResolvedValue([{ ...combo, capabilities: { contextWindow: 32000 } }]);
+    body = await (await GET()).json();
+    expect(body.data[0].capabilities.contextWindow).toBe(32000);
+    expect(body.data[0].capabilities.vision).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it("keeps GET /v1/models/{kind} expansion available via buildModelsList without combosOnly", async () => {
     const models = await buildModelsList(["llm"]);
     const ids = models.map((model) => model.id);

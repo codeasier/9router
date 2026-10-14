@@ -148,6 +148,8 @@ async function createHistoricalDatabase(kind, { policyColumn = kind === "fork-v4
     CREATE INDEX idx_rd_conn ON requestDetails(connectionId);
   `);
   db.run(`INSERT INTO settings(id, data) VALUES(1, ?)`, [JSON.stringify({ sentinel: kind })]);
+  db.run(`INSERT INTO combos(id, name, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?)`,
+    ["legacy-combo", "vip", JSON.stringify(["cx/gpt-5.5"]), "2026-09-01", "2026-09-01"]);
 
   if (kind === "official-v1") {
     db.run(`INSERT INTO _meta(key, value) VALUES('schemaVersion', '1')`);
@@ -196,9 +198,13 @@ function expectCurrentSchema(db, sentinel) {
   expect(meta.schemaVersion).toBe("1");
   expect(meta.forkSchemaVersion).toBe("1");
   expect(meta.backupSchemaVersion).toBe("1");
-  expect(meta.forkBackupSchemaVersion).toBe("4");
+  expect(meta.forkBackupSchemaVersion).toBe("5");
   expect(JSON.parse(db.get(`SELECT data FROM settings WHERE id = 1`).data)).toEqual({ sentinel });
   expect(db.all(`PRAGMA table_info(apiKeys)`).map((column) => column.name)).toContain("policy");
+  expect(db.all(`PRAGMA table_info(combos)`).map((column) => column.name)).toContain("capabilities");
+  const legacyCombo = db.get(`SELECT models, capabilities FROM combos WHERE id = 'legacy-combo'`);
+  expect(JSON.parse(legacyCombo.models)).toEqual(["cx/gpt-5.5"]);
+  expect(legacyCombo.capabilities).toBeNull();
   expect(db.all(`PRAGMA index_list(usageHistory)`).map((index) => index.name)).toContain("idx_uh_apiKey_ts");
   expect(db.get(
     `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'codexResetCreditAttempts'`,
@@ -213,7 +219,7 @@ describe("Schema migrations", () => {
     expect(meta.schemaVersion).toBe("1");
     expect(meta.forkSchemaVersion).toBe("1");
     expect(meta.backupSchemaVersion).toBe("1");
-    expect(meta.forkBackupSchemaVersion).toBe("4");
+    expect(meta.forkBackupSchemaVersion).toBe("5");
     expect(db.get(`PRAGMA integrity_check`).integrity_check).toBe("ok");
     expectBackups(0);
   });
@@ -221,7 +227,7 @@ describe("Schema migrations", () => {
   it.each([
     ["official-v1", false, 1],
     ["fork-v3", false, 1],
-    ["fork-v4", true, 0],
+    ["fork-v4", true, 1],
   ])("upgrades %s physical schema and preserves metadata on restart", async (kind, policyColumn, backups) => {
     await createHistoricalDatabase(kind, { policyColumn });
     let db = await bootDatabase();
@@ -261,7 +267,7 @@ describe("Schema migrations", () => {
 
   it.each([
     ["backupSchemaVersion", "2", /official backupSchemaVersion 2 is newer than supported 1/],
-    ["forkBackupSchemaVersion", "5", /fork forkBackupSchemaVersion 5 is newer than supported 4/],
+    ["forkBackupSchemaVersion", "6", /fork forkBackupSchemaVersion 6 is newer than supported 5/],
   ])("fails closed for a newer declarative %s", async (key, value, expected) => {
     await createHistoricalDatabase("official-v1");
     const db = await createTestAdapter(databaseFile());
@@ -323,15 +329,17 @@ describe("Schema migrations", () => {
       settings: { foo: "legacy-value" },
       apiKeys: [{ id: "k1", key: "abc", name: "test", createdAt: new Date().toISOString() }],
       modelAliases: { "gpt-4": "gpt-4-turbo" },
+      combos: [{ id: "legacy-combo", name: "vip", models: ["cx/gpt-5.5"], capabilities: { contextWindow: 1000000 } }],
     }));
 
     const db = await bootDatabase();
     const meta = metadata(db);
     expect(meta.backupSchemaVersion).toBe("1");
-    expect(meta.forkBackupSchemaVersion).toBe("4");
+    expect(meta.forkBackupSchemaVersion).toBe("5");
     expect(JSON.parse(db.get(`SELECT data FROM settings WHERE id = 1`).data)).toEqual({ foo: "legacy-value" });
     expect(db.all(`SELECT * FROM apiKeys`)).toHaveLength(1);
     expect(db.all(`SELECT * FROM kv WHERE scope = 'modelAliases'`)).toHaveLength(1);
+    expect(JSON.parse(db.get(`SELECT capabilities FROM combos WHERE id = 'legacy-combo'`).capabilities)).toEqual({ contextWindow: 1000000 });
   });
 
   it("auto-sync re-creates a missing index without another backup", async () => {
