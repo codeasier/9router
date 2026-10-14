@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
+import { normalizeComboCapabilities } from "@/shared/utils/comboCapabilities.js";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,12 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const { name, models, kind } = body;
+    let capabilities;
+    try {
+      capabilities = normalizeComboCapabilities(body.capabilities);
+    } catch (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -38,7 +45,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Combo name already exists" }, { status: 400 });
     }
 
-    const combo = await createCombo({ name, models: models || [], kind: kind || null });
+    const combo = await createCombo({ name, models: models || [], kind: kind || null, capabilities });
 
     return NextResponse.json(combo, { status: 201 });
   } catch (error) {
