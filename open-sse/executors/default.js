@@ -1,7 +1,7 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta, mergeAnthropicBeta } from "../providers/shared.js";
-import { resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { getTargetFormat, resolveOpenAICompatibleApiType } from "../services/provider.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
@@ -12,6 +12,7 @@ import { mergeCustomHeaders, mergeNormalizedCustomHeaders } from "../utils/custo
 import { applyRequestBodyOverrides, resolveRequestHeaderOverrides } from "../services/requestOverrides.js";
 import { PROVIDER_ID_TO_ALIAS, getModelDropResponsesReasoningSummary } from "../config/providerModels.js";
 import { FORMATS } from "../translator/formats.js";
+import { normalizeResponsesMessageTypes } from "../translator/formats/responsesApi.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -97,7 +98,14 @@ export class DefaultExecutor extends BaseExecutor {
       }
     }
 
-    return injectReasoningContent({ provider: this.provider, model, body: transformed });
+    const finalBody = injectReasoningContent({ provider: this.provider, model, body: transformed });
+    // Normalize at the outbound boundary: same-format requests skip translation.
+    // Runtime/model transport overrides take precedence over the node's apiType.
+    const targetFormat = credentials?.runtimeTransport?.format || getTargetFormat(this.provider, credentials);
+    if (targetFormat === FORMATS.OPENAI_RESPONSES && Array.isArray(finalBody?.input)) {
+      return { ...finalBody, input: normalizeResponsesMessageTypes(finalBody.input) };
+    }
+    return finalBody;
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
