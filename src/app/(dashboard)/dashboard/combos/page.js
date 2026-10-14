@@ -8,7 +8,8 @@ import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifi
 import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModal, CapacityBadges, Select, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
-import { aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
+import { resolveComboCapabilities } from "@/shared/utils/comboCapabilities.js";
+import ComboCapabilitiesModal from "./ComboCapabilitiesModal";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -57,6 +58,7 @@ export default function CombosPage() {
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingCombo, setEditingCombo] = useState(null);
+  const [propertiesCombo, setPropertiesCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
@@ -232,6 +234,17 @@ export default function CombosPage() {
     } catch (error) {
       console.log("Error updating combo:", error);
     }
+  };
+
+  const handleSaveCapabilities = async (capabilities) => {
+    const res = await fetch(`/api/combos/${propertiesCombo.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capabilities }),
+    });
+    const updated = await res.json();
+    if (!res.ok) throw new Error(updated.error || "Failed to save model properties");
+    setCombos((prev) => prev.map((combo) => combo.id === updated.id ? updated : combo));
   };
 
   const pruneStrategiesForNames = (names, base = comboStrategies) => {
@@ -486,17 +499,17 @@ export default function CombosPage() {
 
           <div className="flex flex-col gap-3">
             {(() => {
-              const comboByName = Object.fromEntries(combos.map((c) => [c.name, c.models]));
               return combos.map((combo) => (
                 <ComboCard
                   key={combo.id}
                   combo={combo}
                   getCaps={getCaps}
-                  comboByName={comboByName}
+                  combos={combos}
                   activeProviders={activeProviders}
                   copied={copied}
                   onCopy={copy}
                   onEdit={() => setEditingCombo(combo)}
+                  onEditCapabilities={() => setPropertiesCombo(combo)}
                   onDelete={() => handleDelete(combo.id)}
                   strategy={comboStrategies[combo.name] || {}}
                   onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
@@ -539,6 +552,17 @@ export default function CombosPage() {
         />
       )}
 
+      {propertiesCombo && (
+        <ComboCapabilitiesModal
+          key={propertiesCombo.id}
+          combo={propertiesCombo}
+          combos={combos}
+          getCaps={getCaps}
+          onClose={() => setPropertiesCombo(null)}
+          onSave={handleSaveCapabilities}
+        />
+      )}
+
       {/* Confirm (delete / generate presets) */}
       <ConfirmModal
         isOpen={!!confirmState}
@@ -563,7 +587,7 @@ const fmtK = (n) => {
   return `${Math.round(n / 1000)}k`;
 };
 
-function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
+function ComboCard({ combo, getCaps, combos = [], activeProviders = [], copied, onCopy, onEdit, onEditCapabilities, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
@@ -571,7 +595,7 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
   // The synced catalog is server-only, so resolving here would fall back to the
   // generic patterns and under-report the limits. getCaps carries the server's
   // answer for /api/models.
-  const comboCaps = aggregateComboCapabilities(combo.models, comboByName, getCaps);
+  const comboCaps = resolveComboCapabilities(combo, combos, getCaps);
 
   return (
     <Card padding="sm" className={`group ${selected ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
@@ -600,8 +624,8 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
                   <code key={index} className="inline-flex items-center gap-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-xs text-text-muted dark:bg-white/5">
                     <span>{model}</span>
                     <CapacityBadges caps={
-                      comboByName[model]
-                        ? aggregateComboCapabilities(comboByName[model], comboByName, getCaps)
+                      combos.some((entry) => entry.name === model)
+                        ? resolveComboCapabilities(combos.find((entry) => entry.name === model), combos, getCaps)
                         : getCaps?.(model)
                     } />
                   </code>
@@ -612,10 +636,12 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
               )}
             </div>
             {comboCaps && (
-              <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
                 <span>ctx {fmtK(comboCaps.contextWindow)}</span>
                 <span className="opacity-40">·</span>
                 <span>max {fmtK(comboCaps.maxOutput)}</span>
+                <CapacityBadges caps={comboCaps} />
+                {Object.keys(combo.capabilities || {}).length > 0 && <span className="text-primary">Custom properties</span>}
               </div>
             )}
             {/* Fusion: judge picker (Auto = first model) */}
@@ -656,7 +682,7 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-1 sm:flex">
+          <div className="grid grid-cols-4 gap-1 sm:flex">
             <button
               onClick={(e) => { e.stopPropagation(); onCopy(combo.name, `combo-${combo.id}`); }}
               className="flex flex-col items-center rounded px-2 py-1 text-text-muted transition-colors hover:bg-black/5 hover:text-primary dark:hover:bg-white/5"
@@ -674,6 +700,15 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
             >
               <span className="material-symbols-outlined text-[18px]">edit</span>
               <span className="text-[10px] leading-tight">Edit</span>
+            </button>
+            <button
+              onClick={onEditCapabilities}
+              className="flex flex-col items-center rounded px-2 py-1 text-text-muted transition-colors hover:bg-black/5 hover:text-primary dark:hover:bg-white/5"
+              title="Model properties"
+              aria-label={`Model properties for ${combo.name}`}
+            >
+              <span className="material-symbols-outlined text-[18px]">tune</span>
+              <span className="text-[10px] leading-tight">Properties</span>
             </button>
             <button
               onClick={onDelete}
