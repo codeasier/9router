@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS = {
   },
   requireLogin: true,
   requireApiKey: true,
+  allowComboModelsOnly: false,
   tunnelDashboardAccess: true,
   authMode: "password",
   ssoType: "oidc",
