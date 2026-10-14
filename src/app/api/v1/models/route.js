@@ -17,7 +17,9 @@ import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig, toCredentialProxyFields } from "@/lib/network/connectionProxy";
-import { capabilitiesFromServiceKind, getCapabilitiesForModel, aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
+import { LLM_KIND, comboMatchesKinds } from "@/sse/services/modelAllowlist";
+import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { resolveComboCapabilities } from "@/shared/utils/comboCapabilities.js";
 import { mergeCustomHeaders } from "../../../../../open-sse/utils/customHeaders.js";
 
 // Qoder shares one live resolver across intl (qoder) and CN (qoder-cn); the
@@ -158,9 +160,6 @@ const parseOpenAIStyleModels = (data) => {
 // and break recursive loops between 9router instances connected to each other.
 const INTERNAL_MODELS_FETCH_HEADER = "x-9r-internal-models-fetch";
 
-// LLM kind sentinel — combos/models with no explicit kind default to LLM
-const LLM_KIND = "llm";
-
 // Map per-model `type` field (in PROVIDER_MODELS) to service kind.
 // Models without `type` are treated as LLM.
 const MODEL_TYPE_TO_KIND = {
@@ -259,16 +258,8 @@ function providerMatchesKinds(providerId, kindFilter) {
   return kindFilter.some((k) => kinds.includes(k));
 }
 
-// Combo matches kindFilter when its `kind` field is in the list.
-// Combos with no kind are treated as LLM.
-function comboMatchesKinds(combo, kindFilter) {
-  const kind = combo?.kind || LLM_KIND;
-  return kindFilter.includes(kind);
-}
-
 function collectComboModels(combos, kindFilter) {
   const models = [];
-  const comboByName = Object.fromEntries(combos.map((c) => [c.name, c.models]));
   for (const combo of combos) {
     if (!comboMatchesKinds(combo, kindFilter)) continue;
     const entry = {
@@ -279,7 +270,7 @@ function collectComboModels(combos, kindFilter) {
     if (combo.kind === "webSearch" || combo.kind === "webFetch") {
       entry.kind = combo.kind;
     } else {
-      const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
+      const comboCaps = resolveComboCapabilities(combo, combos);
       if (comboCaps) entry.capabilities = comboCaps;
     }
     models.push(entry);

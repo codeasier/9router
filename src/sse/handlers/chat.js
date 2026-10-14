@@ -10,6 +10,7 @@ import {
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
+import { getAllowedComboModelIds } from "../services/modelAllowlist.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
@@ -101,6 +102,17 @@ export async function handleChat(request, clientRawRequest = null) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Model must be a non-empty string");
   }
   if (contextMarker) body.model = modelStr;
+
+  // Optional gate: allow only models GET /v1/models publishes (configured combos).
+  // Runs before the key-policy lease so a rejected model never takes a slot.
+  if (settings.allowComboModelsOnly) {
+    const allowedIds = await getAllowedComboModelIds();
+    // null = combos unreadable (DB down) -> fail open rather than reject everything.
+    if (allowedIds && !allowedIds.includes(modelStr)) {
+      log.warn("CHAT", `Model "${modelStr}" is not published by /v1/models — rejected (allowComboModelsOnly)`);
+      return errorResponse(HTTP_STATUS.NOT_FOUND, `Model not found: ${modelStr}`);
+    }
+  }
 
   // Provider is unknown at entry; per-provider budgets are checked per attempt.
   return withKeyPolicy(apiKey, null, async () => {

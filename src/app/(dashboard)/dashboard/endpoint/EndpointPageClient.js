@@ -36,6 +36,8 @@ export default function APIPageClient({ machineId }) {
   const [bulkClearing, setBulkClearing] = useState(false);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
+  const [allowComboModelsOnly, setAllowComboModelsOnly] = useState(false);
+  const [combosCount, setCombosCount] = useState(null);
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
  const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
@@ -233,6 +235,7 @@ export default function APIPageClient({ machineId }) {
       ]);
       if (settingsData) {
         setRequireApiKey(settingsData.requireApiKey || false);
+        setAllowComboModelsOnly(settingsData.allowComboModelsOnly || false);
         setRequireLogin(settingsData.requireLogin !== false);
         setHasPassword(settingsData.hasPassword || false);
         setTunnelDashboardAccess(settingsData.tunnelDashboardAccess || false);
@@ -277,6 +280,15 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
+  const handleAllowComboModelsOnly = async (value) => {
+    try {
+      const updated = await useSettingsStore.getState().patchSettings({ allowComboModelsOnly: value });
+      if (updated) setAllowComboModelsOnly(value);
+    } catch (error) {
+      console.log("Error updating allowComboModelsOnly:", error);
+    }
+  };
+
   const fetchData = async () => {
     try {
       const fetchKeys = async () => {
@@ -305,6 +317,13 @@ export default function APIPageClient({ machineId }) {
         const next = new Set([...prev].filter(id => existingIds.has(id)));
         return next.size === prev.size ? prev : next;
       });
+      // Only combo names are reachable while "Allow combo models only" is on.
+      try {
+        const combosRes = await fetch("/api/combos", { cache: "no-store" });
+        const combosData = combosRes.ok ? await combosRes.json() : null;
+        const combosList = combosData?.combos || (Array.isArray(combosData) ? combosData : []);
+        setCombosCount(combosList.length);
+      } catch { /* warning row is best-effort */ }
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
@@ -1173,6 +1192,25 @@ export default function APIPageClient({ machineId }) {
         {isRemoteHost && !requireApiKey && (
           <div className="mb-4 -mt-2">
             <SecurityWarning message="Endpoint is exposed without an API key." />
+          </div>
+        )}
+
+        <div className="flex items-center justify-between pb-4 border-b border-border">
+          <div>
+            <p className="font-medium">Allow combo models only</p>
+            <p className="text-sm text-text-muted">
+              Requests must name a model published by <code className="text-xs">/v1/models</code>; anything else returns 404
+            </p>
+          </div>
+          <Toggle
+            checked={allowComboModelsOnly}
+            onChange={() => handleAllowComboModelsOnly(!allowComboModelsOnly)}
+          />
+        </div>
+
+        {allowComboModelsOnly && combosCount === 0 && (
+          <div className="mt-4 -mt-2">
+            <SecurityWarning message="No model combos are configured — every chat request will return 404." />
           </div>
         )}
 

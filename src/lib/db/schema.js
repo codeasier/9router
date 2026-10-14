@@ -2,7 +2,7 @@
 export const SCHEMA_VERSION = 1;
 
 // Fork schema namespace. Bump for fork table, column, or index changes below.
-export const FORK_SCHEMA_VERSION = 4;
+export const FORK_SCHEMA_VERSION = 5;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -92,6 +92,7 @@ export const TABLES = {
       name: "TEXT UNIQUE NOT NULL",
       kind: "TEXT",
       models: "TEXT NOT NULL",
+      capabilities: "TEXT",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
