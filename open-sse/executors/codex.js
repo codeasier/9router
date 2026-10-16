@@ -483,8 +483,6 @@ export class CodexExecutor extends BaseExecutor {
     if (!body.input || (Array.isArray(body.input) && body.input.length === 0)) {
       body.input = [{ type: "message", role: "user", content: [{ type: "input_text", text: "..." }] }];
     }
-    const upstreamModel = getModelUpstreamId("cx", body.model || model);
-    const responsesLite = isCodexResponsesLiteModel(upstreamModel);
 
     // Keep system prompts in body.input as role=developer so they stay in the cacheable prefix
     convertSystemToDeveloperRole(body);

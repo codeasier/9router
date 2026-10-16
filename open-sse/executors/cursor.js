@@ -1030,8 +1030,8 @@ export class CursorExecutor extends BaseExecutor {
         // Defer terminal SSE until runWithRetry settles. Emitting stop on the
         // first empty upstream turn wedges Cursor before the tail-only retry
         // can recover the session.
+        let outputChars = 0;
         runWithRetry((event) => {
-          let outputChars = 0;
           if (event.type === "text") {
             outputChars += event.value.length;
             controller.enqueue(encoder.encode(chatChunkSse({ id: responseId, created, model, delta: { content: event.value } })));
