@@ -33,9 +33,12 @@ export async function getApiKeyById(id) {
   return rowToKey(row);
 }
 
-// Used by the /v1 handlers to read the presented key's access settings.
+// Resolve full apiKey record by raw key value. Used by routes that need the
+// stable `id` for cache/rate-limit bookkeeping after authentication. Returns
+// null for missing keys. Active state is intentionally not enforced here —
+// callers (e.g. /v1/usage) decide whether to accept the key.
 export async function getApiKeyByKey(key) {
-  if (!key) return null;
+  if (!key || typeof key !== "string") return null;
   const db = await getAdapter();
   const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
   return rowToKey(row);
@@ -94,13 +97,3 @@ export async function validateApiKey(key) {
   return row.isActive === 1 || row.isActive === true;
 }
 
-// Resolve full apiKey record by raw key value. Used by routes that need the
-// stable `id` for cache/rate-limit bookkeeping after authentication. Returns
-// null for missing keys. Active state is intentionally not enforced here —
-// callers (e.g. /v1/usage) decide whether to accept the key.
-export async function getApiKeyByKey(key) {
-  if (!key || typeof key !== "string") return null;
-  const db = await getAdapter();
-  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
-  return rowToKey(row);
-}

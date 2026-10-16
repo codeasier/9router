@@ -58,10 +58,10 @@ export async function handleStt(request) {
   }
 
   // Per-key policy guard (entry)
-  return withKeyPolicy(apiKey, null, async () => handleSttInner(formData, modelStr, apiKey));
+  return withKeyPolicy(apiKey, null, async () => handleSttInner(request, formData, modelStr, apiKey));
 }
 
-async function handleSttInner(formData, modelStr, apiKey) {
+async function handleSttInner(request, formData, modelStr, apiKey) {
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!formData.get("file")) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: file");
 
