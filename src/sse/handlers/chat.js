@@ -28,6 +28,7 @@ import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
 import { withKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { isManagementAuthenticated } from "@/dashboardGuard";
 
 /**
  * Handle chat completion request
@@ -113,7 +114,14 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Optional gate: allow only models GET /v1/models publishes (configured combos).
   // Runs before the key-policy lease so a rejected model never takes a slot.
-  if (settings.allowComboModelsOnly) {
+  //
+  // The gate is a policy for API *consumers*, not for the operator administering
+  // them: the dashboard's per-model test and its example cards call these same
+  // public endpoints by raw `provider/model`, so an admin would otherwise be
+  // locked out of every model by a switch they set for somebody else. Requests
+  // authenticated as the dashboard (session cookie) or as this instance's own
+  // CLI/self-call (x-9r-cli-token) skip the gate; an ordinary API key does not.
+  if (settings.allowComboModelsOnly && !(await isManagementAuthenticated(request))) {
     const allowedIds = await getAllowedComboModelIds();
     // null = combos unreadable (DB down) -> fail open rather than reject everything.
     if (allowedIds && !allowedIds.includes(modelStr)) {

@@ -1219,7 +1219,8 @@ export default function APIPageClient({ machineId }) {
           <div>
             <p className="font-medium">Allow combo models only</p>
             <p className="text-sm text-text-muted">
-              Requests must name a model published by <code className="text-xs">/v1/models</code>; anything else returns 404
+              Requests must name a model published by <code className="text-xs">/v1/models</code>; anything else returns 404.
+              This dashboard is exempt, so model tests and examples keep working.
             </p>
           </div>
           <Toggle
@@ -1230,7 +1231,7 @@ export default function APIPageClient({ machineId }) {
 
         {allowComboModelsOnly && combosCount === 0 && (
           <div className="mt-4 -mt-2">
-            <SecurityWarning message="No model combos are configured — every chat request will return 404." />
+            <SecurityWarning message="No model combos are configured — API clients will get 404 for every chat request." />
           </div>
         )}
 
