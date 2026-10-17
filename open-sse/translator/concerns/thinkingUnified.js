@@ -130,18 +130,18 @@ function openAIThinkingDisplay(body) {
 const NATIVE_ONLY_FORMATS = new Set(["gemini-level", "gemini-budget", "claude-budget", "claude-adaptive", "kiro"]);
 
 function resolveFormat(targetFormat, model, provider) {
+  // Responses wire always takes reasoning:{effort} — a provider-native chat
+  // field (e.g. deepseek thinking.enabled + reasoning_effort) would be
+  // rejected by the /responses endpoint, so the target wire wins here.
+  if (targetFormat === "openai-responses" || targetFormat === "openai-response") {
+    return "openai-responses";
+  }
   if (targetFormat === "commandcode") return "commandcode";
   const providerFmt = provider ? PROVIDERS[provider]?.thinkingFormat : null;
   if (providerFmt) return providerFmt;
   const caps = getCapabilitiesForModel(provider, model);
   const isOpenAIWire = targetFormat === "openai" || targetFormat === "openai-responses";
   if (caps.thinkingFormat && !(isOpenAIWire && NATIVE_ONLY_FORMATS.has(caps.thinkingFormat))) {
-    // Strict Responses APIs (Muse, Codex) reject top-level reasoning_effort and
-    // require nested reasoning: { effort, summary }. Other upstreams (OpenCode,
-    // etc.) keep Chat-shaped reasoning_effort.
-    if ((provider === "muse" || provider === "codex") && targetFormat === "openai-responses") {
-      return "openai-responses";
-    }
     return caps.thinkingFormat;
   }
   return FORMAT_TO_NATIVE[targetFormat] || "openai";
