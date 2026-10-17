@@ -312,9 +312,18 @@ function comboSeatLimits(combo, combosByName, visiting = new Set()) {
     if (name) visiting.delete(name);
   }
 
+  // Apply each combo's explicit limits after aggregating its seats, including
+  // nested combos. A parent override wins over all inherited limits; absent or
+  // invalid values retain the conservative min/min advertised by this endpoint.
+  const override = combo?.capabilities;
+  const validLimit = (value) => Number.isSafeInteger(value) && value > 0;
   return {
-    contextWindow: Number.isFinite(contextWindow) ? contextWindow : undefined,
-    maxOutput: Number.isFinite(maxOutput) ? maxOutput : undefined,
+    contextWindow: validLimit(override?.contextWindow)
+      ? override.contextWindow
+      : Number.isFinite(contextWindow) ? contextWindow : undefined,
+    maxOutput: validLimit(override?.maxOutput)
+      ? override.maxOutput
+      : Number.isFinite(maxOutput) ? maxOutput : undefined,
   };
 }
 
@@ -335,10 +344,8 @@ function collectComboModels(combos, kindFilter) {
     } else {
       const comboCaps = resolveComboCapabilities(combo, combos, comboSeatCapabilities);
       if (comboCaps) entry.capabilities = comboCaps;
-      // Any seat can serve the request, so the only window a combo can promise is
-      // its smallest. Combo entries were the only models on this endpoint that
-      // published no limits at all, which leaves a client to guess from the name —
-      // and it guesses high (see the snake_case note on the per-provider path).
+      // Keep conservative advertised limits unless the user overrides them.
+      // The shared capability aggregate retains its official output-max rule.
       const { contextWindow, maxOutput } = comboSeatLimits(combo, combosByName);
       if (Number.isFinite(contextWindow)) entry.context_length = contextWindow;
       if (Number.isFinite(maxOutput)) entry.max_completion_tokens = maxOutput;

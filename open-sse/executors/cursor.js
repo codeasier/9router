@@ -732,7 +732,7 @@ export class CursorExecutor extends BaseExecutor {
     // account's default agent-capable model from the live catalog before Run.
     let runModel = model;
     if (model === "default" || model === "auto") {
-      const catalog = await resolveCursorModels(credentials, { signal, log });
+      const catalog = await resolveCursorModels(credentials, { signal, log, proxyOptions });
       const selection = resolveAutoModelSelection(catalog?.models);
       if (selection) {
         log?.info?.("CURSOR", `auto model resolved: ${model} → ${selection.modelId} (${selection.matchedBy})`);
