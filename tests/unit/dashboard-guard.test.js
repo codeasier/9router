@@ -33,7 +33,7 @@ vi.mock("@/lib/auth/dashboardSession", () => ({
   verifyDashboardAuthToken: mocks.verifyDashboardAuthToken,
 }));
 
-const { proxy, __test__ } = await import("../../src/dashboardGuard.js");
+const { proxy, isManagementAuthenticated, __test__ } = await import("../../src/dashboardGuard.js");
 
 const PEER_TOKEN = "peer-token-fixture";
 
@@ -284,6 +284,46 @@ describe("dashboard guard local-only access", () => {
     }));
 
     expect(response).toBe(mocks.nextResponse);
+  });
+});
+
+describe("dashboard guard operator identity", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  // The combo-only model gate (src/sse/handlers/chat.js) calls this to tell an
+  // operator apart from an API consumer, so a plain API key must NOT qualify.
+  it("accepts this instance's CLI token", async () => {
+    expect(await isManagementAuthenticated(request("/v1/chat/completions", {
+      authorization: "Bearer sk-consumer-key",
+      "x-9r-cli-token": "cli-token",
+    }))).toBe(true);
+  });
+
+  it("accepts a verified dashboard session cookie", async () => {
+    mocks.verifyDashboardAuthToken.mockResolvedValue(true);
+    const cookieRequest = request("/v1/chat/completions", { authorization: "Bearer sk-consumer-key" });
+    cookieRequest.cookies = { get: vi.fn((name) => (name === "auth_token" ? { value: "jwt" } : undefined)) };
+
+    expect(await isManagementAuthenticated(cookieRequest)).toBe(true);
+    expect(mocks.verifyDashboardAuthToken).toHaveBeenCalledWith("jwt");
+  });
+
+  it("rejects a wrong CLI token and an unverifiable cookie", async () => {
+    const consumerRequest = request("/v1/chat/completions", {
+      authorization: "Bearer sk-consumer-key",
+      "x-9r-cli-token": "forged-token",
+    });
+    consumerRequest.cookies = { get: vi.fn(() => ({ value: "stale-jwt" })) };
+
+    expect(await isManagementAuthenticated(consumerRequest)).toBe(false);
+  });
+
+  it("rejects an anonymous API consumer", async () => {
+    expect(await isManagementAuthenticated(request("/v1/chat/completions"))).toBe(false);
   });
 });
 
