@@ -24,6 +24,7 @@ vi.mock("open-sse/config/providerModels.js", () => ({
 
 vi.mock("open-sse/config/providers.js", () => ({
   PROVIDERS: {},
+  PROVIDER_OAUTH: {},
   resolveOllamaLocalHost: vi.fn(),
   resolveXiaomiTokenplanBaseUrl: vi.fn(),
 }));
