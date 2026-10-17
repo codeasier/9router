@@ -1,5 +1,6 @@
-// Official v0.5.59 schema namespace. Fork-only changes must not bump this.
-export const SCHEMA_VERSION = 1;
+// Official v0.5.104 schema namespace (official bumped to 2 for the apiKeys
+// access columns). Fork-only changes must not bump this.
+export const SCHEMA_VERSION = 2;
 
 // Fork schema namespace. Bump for fork table, column, or index changes below.
 export const FORK_SCHEMA_VERSION = 5;

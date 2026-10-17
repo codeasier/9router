@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const fx = vi.hoisted(() => ({
   combos: [
     { id: "c1", name: "Main", models: ["openai/model-a", "openai/model-b"] },
+    { id: "c2", name: "Aux", models: ["openai/model-c"] },
   ],
   keys: {},
 }));
@@ -23,6 +24,8 @@ vi.mock("@/lib/localDb", () => ({
   getProviderConnections: async () => [],
   getProviderConnectionById: async () => null,
   getCustomModels: async () => [],
+  // Fork keyPolicy reads the key record through the localDb shim.
+  getApiKeyByKey: async (k) => fx.keys[k] || null,
 }));
 vi.mock("@/lib/disabledModelsDb", () => ({ getDisabledModels: async () => ({}) }));
 vi.mock("@/lib/db/repos/combosRepo.js", () => ({ getCombos: async () => fx.combos }));
@@ -210,13 +213,13 @@ describe("video: a body without a readable model is denied for restricted keys",
 describe("/v1/models routes filter by key", () => {
   const list = async (k) => (await (await modelsRoute.GET(new Request("http://localhost/v1/models", { headers: auth(k) }))).json()).data.map((m) => m.id);
 
-  it("unrestricted sees the full catalog; restricted keys see only their entries", async () => {
+  it("unrestricted sees the published combos; restricted keys see only their entries", async () => {
     const all = await list("sk-open");
     expect(all).toContain("Main");
-    const someModel = all.find((id) => id.startsWith("openai/"));
-    expect(someModel).toBeTruthy();
-    fx.keys["sk-mix"] = { id: "x", name: "mix", isActive: true, access: { restricted: true, allow: ["Main", someModel.toUpperCase()] } };
-    expect(await list("sk-mix")).toEqual(["Main", someModel]);
+    // Fork: GET /v1/models publishes configured combos only (no provider catalog).
+    expect(all).toContain("Aux");
+    fx.keys["sk-mix"] = { id: "x", name: "mix", isActive: true, access: { restricted: true, allow: ["Main", "Aux"] } };
+    expect(await list("sk-mix")).toEqual(["Main", "Aux"]);
     expect(await list("sk-combo")).toEqual(["Main"]);
     expect(await list("sk-empty")).toEqual([]);
     expect(await list(null)).toEqual(all); // no key: unchanged (middleware governs remote access)
@@ -226,8 +229,9 @@ describe("/v1/models routes filter by key", () => {
     const emb = await (await kind("sk-open", ["embedding"])).json();
     expect(emb.data.length).toBeGreaterThan(0);
     expect((await (await kind("sk-empty", ["embedding"])).json()).data).toEqual([]);
-    const all = (await (await modelsRoute.GET(new Request("http://localhost/v1/models"))).json()).data;
-    const one = all.find((m) => m.owned_by !== "combo").id;
+    // GET /v1/models is combo-only on the fork, but the single-model lookup
+    // still resolves the expanded LLM catalog; probe it with a static model.
+    const one = "openai/gpt-5.5";
     expect((await kind("sk-open", one.split("/"))).status).toBe(200);
     expect((await kind("sk-empty", one.split("/"))).status).toBe(404);
   });

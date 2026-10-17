@@ -20,6 +20,8 @@ vi.mock("../../src/sse/services/auth.js", () => ({
 
 vi.mock("@/lib/localDb", () => ({
   getSettings: async () => ({ requireApiKey: false }),
+  // Fork keyPolicy reads the key record through the localDb shim.
+  getApiKeyByKey: async () => null,
 }));
 
 vi.mock("../../src/sse/services/model.js", () => ({

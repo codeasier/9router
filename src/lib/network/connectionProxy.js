@@ -173,6 +173,8 @@ export async function resolveConnectionProxyConfig(
       proxyPoolId: proxyPoolId || null,
       proxyPool: null,
 
+      strictProxy: false,
+
       ...legacy,
     };
   }
@@ -187,6 +189,8 @@ export async function resolveConnectionProxyConfig(
 
     proxyPoolId: proxyPoolId || null,
     proxyPool: null,
+
+    strictProxy: false,
 
     ...legacy,
   };
