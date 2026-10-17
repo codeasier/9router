@@ -213,11 +213,5 @@ export function resolveChatRouting({
   // over a model-level targetFormat, which is only the fallback for clients
   // whose wire format has no supported transport.
   const targetFormat = useTransport?.format || modelTargetFormat || providerFormat;
-  // Guard failed (useTransport null) but the target pins another endpoint: point
-  // the URL at the target too, otherwise the translated body would be posted to
-  // the provider default (e.g. a Responses body → /chat/completions).
-  if (!useTransport && targetFormat) {
-    useTransport = buildForcedTransport(provider, targetFormat, credentials) || null;
-  }
   return { targetFormat, useTransport, override, thinkingIntent };
 }

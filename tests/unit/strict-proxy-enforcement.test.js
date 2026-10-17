@@ -24,28 +24,30 @@ const { resolveConnectionProxyConfig } = await import("../../src/lib/network/con
 const { proxyAwareFetch } = await import("../../open-sse/utils/proxyFetch.js");
 
 describe("strict pool keeps strictProxy when the pool is unusable (#4333)", () => {
-  it("keeps strictProxy for an inactive strict pool", async () => {
+  // Fork (proxy-pool bindings, PR lineage #24/#26): a bound pool must be
+  // available. An unusable binding throws instead of degrading to a
+  // legacy/global/direct transport — a stricter form of the same #4333
+  // guarantee. Resolution only succeeds for usable pools, whose strictProxy
+  // then rides on the resolved config.
+  it("rejects an inactive strict pool instead of degrading", async () => {
     getProxyPoolById.mockResolvedValue({
       id: "p1", isActive: false, proxyUrl: "http://127.0.0.1:7890", strictProxy: true,
     });
-    const cfg = await resolveConnectionProxyConfig({ proxyPoolId: "p1" });
-    expect(cfg.strictProxy).toBe(true);
+    await expect(resolveConnectionProxyConfig({ proxyPoolId: "p1" })).rejects.toThrow(/unavailable/);
   });
 
-  it("keeps strictProxy for a strict pool saved without a proxy url", async () => {
+  it("rejects a strict pool saved without a proxy url instead of degrading", async () => {
     getProxyPoolById.mockResolvedValue({
       id: "p2", isActive: true, proxyUrl: "", strictProxy: true,
     });
-    const cfg = await resolveConnectionProxyConfig({ proxyPoolId: "p2" });
-    expect(cfg.strictProxy).toBe(true);
+    await expect(resolveConnectionProxyConfig({ proxyPoolId: "p2" })).rejects.toThrow(/unavailable/);
   });
 
-  it("still reports strictProxy:false for a non-strict pool", async () => {
+  it("rejects a non-strict unusable pool all the same", async () => {
     getProxyPoolById.mockResolvedValue({
       id: "p3", isActive: false, proxyUrl: "http://127.0.0.1:7890", strictProxy: false,
     });
-    const cfg = await resolveConnectionProxyConfig({ proxyPoolId: "p3" });
-    expect(cfg.strictProxy).toBe(false);
+    await expect(resolveConnectionProxyConfig({ proxyPoolId: "p3" })).rejects.toThrow(/unavailable/);
   });
 
   it("still reports strictProxy:false when no pool is assigned", async () => {

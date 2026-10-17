@@ -102,6 +102,9 @@ describe("handleChatCore strictProxy", () => {
       connectionProxyUrl: "http://172.17.0.1:7895/",
       connectionNoProxy: "",
       vercelRelayUrl: "",
+      // Official #4333: the pool id rides along so strict-proxy enforcement
+      // in proxyFetch and the Cursor h2 path can see the binding.
+      proxyPoolId: "a37a0712-8033-4683-892a-0ecbc8d478a1",
       strictProxy: true,
     });
     expect(log.info).toHaveBeenCalledWith(

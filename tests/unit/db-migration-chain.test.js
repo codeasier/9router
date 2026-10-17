@@ -197,7 +197,7 @@ function expectCurrentSchema(db, sentinel) {
   const meta = metadata(db);
   expect(meta.schemaVersion).toBe("1");
   expect(meta.forkSchemaVersion).toBe("1");
-  expect(meta.backupSchemaVersion).toBe("1");
+  expect(meta.backupSchemaVersion).toBe("2");
   expect(meta.forkBackupSchemaVersion).toBe("5");
   expect(JSON.parse(db.get(`SELECT data FROM settings WHERE id = 1`).data)).toEqual({ sentinel });
   expect(db.all(`PRAGMA table_info(apiKeys)`).map((column) => column.name)).toContain("policy");
@@ -218,7 +218,7 @@ describe("Schema migrations", () => {
     const meta = metadata(db);
     expect(meta.schemaVersion).toBe("1");
     expect(meta.forkSchemaVersion).toBe("1");
-    expect(meta.backupSchemaVersion).toBe("1");
+    expect(meta.backupSchemaVersion).toBe("2");
     expect(meta.forkBackupSchemaVersion).toBe("5");
     expect(db.get(`PRAGMA integrity_check`).integrity_check).toBe("ok");
     expectBackups(0);
@@ -266,7 +266,7 @@ describe("Schema migrations", () => {
   });
 
   it.each([
-    ["backupSchemaVersion", "2", /official backupSchemaVersion 2 is newer than supported 1/],
+    ["backupSchemaVersion", "3", /official backupSchemaVersion 3 is newer than supported 2/],
     ["forkBackupSchemaVersion", "6", /fork forkBackupSchemaVersion 6 is newer than supported 5/],
   ])("fails closed for a newer declarative %s", async (key, value, expected) => {
     await createHistoricalDatabase("official-v1");
@@ -334,7 +334,7 @@ describe("Schema migrations", () => {
 
     const db = await bootDatabase();
     const meta = metadata(db);
-    expect(meta.backupSchemaVersion).toBe("1");
+    expect(meta.backupSchemaVersion).toBe("2");
     expect(meta.forkBackupSchemaVersion).toBe("5");
     expect(JSON.parse(db.get(`SELECT data FROM settings WHERE id = 1`).data)).toEqual({ foo: "legacy-value" });
     expect(db.all(`SELECT * FROM apiKeys`)).toHaveLength(1);
