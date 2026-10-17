@@ -130,12 +130,6 @@ function openAIThinkingDisplay(body) {
 const NATIVE_ONLY_FORMATS = new Set(["gemini-level", "gemini-budget", "claude-budget", "claude-adaptive", "kiro"]);
 
 function resolveFormat(targetFormat, model, provider) {
-  // Responses wire always takes reasoning:{effort} — a provider-native chat
-  // field (e.g. deepseek thinking.enabled + reasoning_effort) would be
-  // rejected by the /responses endpoint, so the target wire wins here.
-  if (targetFormat === "openai-responses" || targetFormat === "openai-response") {
-    return "openai-responses";
-  }
   if (targetFormat === "commandcode") return "commandcode";
   // A multi-endpoint provider can declare, per transports[] entry, the thinking shape that
   // endpoint accepts. It wins over the model's thinkingFormat, which describes the Chat wire:

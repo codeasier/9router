@@ -3,7 +3,12 @@ const mocks = vi.hoisted(() => ({ getProxyPoolById: vi.fn(), getProviderConnecti
 vi.mock("@/models", () => ({ getProxyPoolById: mocks.getProxyPoolById }));
 vi.mock("@/lib/localDb", () => mocks);
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
-vi.mock("undici", () => ({ ProxyAgent: class { constructor({ uri }) { this.uri = uri; } } }));
+vi.mock("undici", () => ({
+  // Official getDispatcher destructures both Agent (direct/insecure path)
+  // and ProxyAgent (proxied path) before choosing.
+  Agent: class { constructor() {} },
+  ProxyAgent: class { constructor({ uri }) { this.uri = uri; } },
+}));
 // Capture only mocked transport in proxyFetch. No sockets or real tokens.
 const originalFetch = globalThis.fetch;
 globalThis.fetch = mocks.send;
