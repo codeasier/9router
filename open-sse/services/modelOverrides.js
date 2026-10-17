@@ -213,5 +213,14 @@ export function resolveChatRouting({
   // over a model-level targetFormat, which is only the fallback for clients
   // whose wire format has no supported transport.
   const targetFormat = useTransport?.format || modelTargetFormat || providerFormat;
+  // Dynamic compatible nodes have no registry transports. Materialize their
+  // selected endpoint so a custom model's wire format agrees with the URL,
+  // without replacing an existing source-format-matched transport.
+  const isDynamicCompatible = typeof provider === "string" && (
+    provider.startsWith("openai-compatible-") || provider.startsWith("anthropic-compatible-")
+  );
+  if (!useTransport && targetFormat && isDynamicCompatible) {
+    useTransport = buildForcedTransport(provider, targetFormat, credentials) || null;
+  }
   return { targetFormat, useTransport, override, thinkingIntent };
 }
