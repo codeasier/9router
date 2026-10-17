@@ -8,9 +8,16 @@ const mocks = vi.hoisted(() => ({
   bypass: vi.fn(),
   upstream: vi.fn(),
   getCombosError: null,
+  internal: false,
 }));
 vi.mock("open-sse/index.js", () => ({}));
 vi.mock("open-sse/translator/index.js", () => ({ initTranslators: vi.fn() }));
+// Operator identity: dashboard session cookie or this instance's own CLI token.
+// Mocked here so the gate's own contract is what these tests pin; the real
+// helper is covered by tests/unit/dashboard-guard.test.js.
+vi.mock("@/dashboardGuard", () => ({
+  isManagementAuthenticated: async () => mocks.internal,
+}));
 vi.mock("@/lib/localDb", () => ({
   getSettings: async () => mocks.settings,
   getApiKeyByKey: async () => null,
@@ -68,6 +75,7 @@ beforeEach(() => {
   mocks.settings = { requireApiKey: true, allowComboModelsOnly: false };
   mocks.valid = true;
   mocks.getCombosError = null;
+  mocks.internal = false;
   mocks.combos = [
     { name: "fast", kind: null, models: ["cx/gpt-5.6-sol"] },
     { name: "deep", kind: "llm", models: ["cx/gpt-6-astra"] },
@@ -136,5 +144,25 @@ describe("allowComboModelsOnly request gate", () => {
     mocks.settings = { requireApiKey: true, allowComboModelsOnly: true };
     mocks.combos = [];
     expect((await POST(request("fast"))).status).toBe(404);
+  });
+
+  it("lets the operator through, so dashboard model tests survive the policy", async () => {
+    mocks.settings = { requireApiKey: true, allowComboModelsOnly: true };
+    mocks.internal = true;
+    expect((await POST(request("cx/gpt-6.1-sol"))).status).toBe(204);
+    // Reached resolution instead of short-circuiting into the 404 gate.
+    expect(mocks.combo).toHaveBeenCalledWith("cx/gpt-6.1-sol");
+  });
+
+  it("still resolves real models for the operator, not just combo names", async () => {
+    mocks.settings = { requireApiKey: true, allowComboModelsOnly: true };
+    mocks.internal = true;
+    expect((await POST(request("volceapi/kimi-k3"))).status).toBe(204);
+    expect(mocks.combo).toHaveBeenCalledWith("volceapi/kimi-k3");
+  });
+
+  it("does not consult the operator identity while the gate is off", async () => {
+    mocks.settings = { requireApiKey: true, allowComboModelsOnly: false };
+    expect((await POST(request("cx/gpt-5.5"))).status).toBe(204);
   });
 });
