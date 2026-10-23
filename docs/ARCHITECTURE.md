@@ -108,6 +108,17 @@ Important compatibility routes:
 - `src/app/api/v1beta/models/route.js`
 - `src/app/api/v1beta/models/[...path]/route.js`
 
+The Gemini endpoint is a **native passthrough**: the client body is a
+`GenerateContentRequest` and only gains the routing fields (`model`, `stream`)
+before `handleChat`. `detectFormatByEndpoint()` pins `/v1beta/` to the `gemini`
+source format, and direct `gemini:<target>` request translators wrap the payload
+in the vendor envelope (Antigravity `v1internal`, Gemini CLI `request`,
+Vertex bare) instead of rebuilding it into OpenAI `messages[]`. Responses come
+back through the mirrored `antigravity|gemini-cli|vertex → gemini` translators
+(unwrapping `.response`); combo members on another wire use the
+`openai→gemini` response translator. This is what keeps tools, inline media and
+structured-output config intact.
+
 Management domains:
 
 - Auth/settings: `src/app/api/auth/*`, `src/app/api/settings/*`

@@ -168,7 +168,10 @@ async function canAccessLocalOnlyRoute(request) {
 }
 
 async function hasValidToken(request) {
-  const token = request.cookies.get("auth_token")?.value;
+  // A plain Web `Request` (built by compat routes that re-wrap a body, e.g.
+  // /v1beta) has no `.cookies`; tolerate it instead of throwing a 500 and
+  // failing the request outright.
+  const token = request?.cookies?.get?.("auth_token")?.value;
   return await verifyDashboardAuthToken(token);
 }
 

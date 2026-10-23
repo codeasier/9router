@@ -117,6 +117,14 @@ export class DefaultExecutor extends BaseExecutor {
     if (targetFormat === FORMATS.OPENAI_RESPONSES && Array.isArray(finalBody?.input)) {
       return { ...finalBody, input: normalizeResponsesMessageTypes(finalBody.input) };
     }
+    // Native Gemini wire: the model travels in the URL and `stream` selects the
+    // action, so neither belongs in GenerateContentRequest — Google rejects
+    // unknown names. A Gemini-format client body reaches here unchanged
+    // (same-format skip) and still carries 9router's routing fields.
+    if (targetFormat === FORMATS.GEMINI && finalBody && typeof finalBody === "object") {
+      delete finalBody.model;
+      delete finalBody.stream;
+    }
     return finalBody;
   }
 

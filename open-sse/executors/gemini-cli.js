@@ -25,12 +25,20 @@ export class GeminiCLIExecutor extends BaseExecutor {
   transformRequest(model, body, stream, credentials) {
     // Store model for use in buildHeaders (called by base.execute after transformRequest)
     this._currentModel = model;
-    // Cloud Code Assist wraps the Gemini payload: { project, model, request: <body> }
-    if (body && body.request && body.model) return body;
+    // Already wrapped (antigravity-shaped body forwarded here): keep the envelope
+    // but never leak 9router's own serialization field upstream.
+    if (body && body.request) {
+      const { stream: _stream, ...envelope } = body;
+      return envelope;
+    }
+    // Cloud Code Assist wraps the Gemini payload: { project, model, request: <body> }.
+    // `model`/`stream` route the request inside 9router — GenerateContentRequest has
+    // no such fields, and Google rejects unknown names.
+    const { model: _model, stream: _stream, ...payload } = body || {};
     return {
       project: credentials?.projectId || body?.project,
       model,
-      request: body
+      request: payload
     };
   }
 

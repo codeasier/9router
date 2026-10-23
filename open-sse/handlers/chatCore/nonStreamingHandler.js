@@ -2,6 +2,7 @@ import { FORMATS } from "../../translator/formats.js";
 import { needsTranslation } from "../../translator/index.js";
 import { openAICompletionToClaudeMessage } from "../../translator/concerns/claudeMessage.js";
 import { ollamaBodyToOpenAI } from "../../translator/response/ollama-to-openai.js";
+import { openAICompletionToGeminiResponse } from "../../translator/response/openai-to-gemini.js";
 import { addBufferToUsage, filterUsageForFormat } from "../../utils/usageTracking.js";
 import { createErrorResult } from "../../utils/error.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
@@ -179,6 +180,17 @@ function responsesToOpenAICompletion(responseBody) {
  */
 export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames = null) {
   if (targetFormat === sourceFormat) return responseBody;
+
+  // Gemini-native client. Gemini-family providers already answer with a
+  // GenerateContentResponse (private endpoints wrap it in `.response`), so the
+  // body is unwrapped and passed through untouched; only an OpenAI-shaped
+  // upstream (combo member on another wire) needs the conversion.
+  if (sourceFormat === FORMATS.GEMINI) {
+    if (targetFormat === FORMATS.OPENAI || targetFormat === FORMATS.OPENAI_RESPONSES) {
+      return openAICompletionToGeminiResponse(responseBody);
+    }
+    return responseBody?.response ?? responseBody;
+  }
   // Provider responded in OpenAI Chat Completions shape but the client speaks
   // Responses API — convert so tool_calls/text surface as Responses `output`.
   if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES) {
@@ -376,6 +388,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // Responses-format translation produces a `object:"response"` body with no
   // `choices`; skip the Chat-Completions-specific post-processing below for it.
   const isResponsesResponse = sourceFormat === FORMATS.OPENAI_RESPONSES && translatedResponse?.object === "response";
+  // A Gemini client expects a GenerateContentResponse: no `object`/`created`
+  // stamps and no OpenAI usage shape.
+  const isGeminiResponse = sourceFormat === FORMATS.GEMINI;
+  const keepsNativeWire = isClaudeMessageResponse || isResponsesResponse || isGeminiResponse;
 
   // Fix finish_reason for tool_calls: some providers return non-standard values (e.g. "other")
   if (translatedResponse?.choices?.[0]) {
@@ -388,13 +404,13 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   }
 
   // Ensure OpenAI-required fields
-  if (!isClaudeMessageResponse && !isResponsesResponse) {
+  if (!keepsNativeWire) {
     if (!translatedResponse.object) translatedResponse.object = "chat.completion";
     if (!translatedResponse.created) translatedResponse.created = Math.floor(Date.now() / 1000);
   }
 
   // Strip Azure-specific fields
-  if (!isClaudeMessageResponse && !isResponsesResponse) {
+  if (!keepsNativeWire) {
     delete translatedResponse.prompt_filter_results;
     if (translatedResponse?.choices) {
       for (const choice of translatedResponse.choices) delete choice.content_filter_results;

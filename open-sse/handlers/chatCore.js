@@ -233,6 +233,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     stripContinuityFields(translatedBody);
   }
 
+  // `stream` is 9router serialization, not a GenerateContentRequest field, and
+  // Google validates unknown names strictly. A Gemini-native client body reaches
+  // the upstream as-is (passthrough) or wrapped by an envelope builder, so drop
+  // it here rather than in every executor.
+  if (sourceFormat === FORMATS.GEMINI && translatedBody && typeof translatedBody === "object") {
+    delete translatedBody.stream;
+  }
+
   // Tool normalization: MCP-equivalent built-in dedup (Claude clients) + same-name
   // dedup for DeepSeek models (upstream rejects duplicate tool names on all endpoints).
   if (Array.isArray(translatedBody.tools)) {

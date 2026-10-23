@@ -16,6 +16,27 @@ const GEMINI_NATIVE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta
 // Gemini model id charset (matches sanitizeGeminiFunctionName); blocks path traversal in upstream URL.
 const GEMINI_NATIVE_MODEL_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
 
+// Method suffix on the URL, per the Gemini HTTP convention. Anything else is a
+// 404 rather than being coerced into generateContent with the suffix glued onto
+// the model name.
+const GEMINI_ACTION_PATTERN = /:(streamGenerateContent|generateContent|countTokens|embedContent|batchEmbedContents|computeTokens|predict)$/;
+
+// HTTP status → Google API error status string.
+const GOOGLE_ERROR_STATUS = {
+  400: "INVALID_ARGUMENT",
+  401: "UNAUTHENTICATED",
+  403: "PERMISSION_DENIED",
+  404: "NOT_FOUND",
+  409: "ABORTED",
+  429: "RESOURCE_EXHAUSTED",
+  499: "CANCELLED",
+  500: "INTERNAL",
+  501: "UNIMPLEMENTED",
+  502: "UNAVAILABLE",
+  503: "UNAVAILABLE",
+  504: "DEADLINE_EXCEEDED",
+};
+
 /**
  * Initialize translators once
  */
@@ -39,89 +60,196 @@ export async function OPTIONS() {
   });
 }
 
+function googleError(message, status = 400) {
+  return Response.json(
+    { error: { code: status, message, status: GOOGLE_ERROR_STATUS[status] || "UNKNOWN" } },
+    { status, headers: { "Access-Control-Allow-Origin": "*" } }
+  );
+}
+
 /**
- * POST /v1beta/models/{model}:generateContent        — non-streaming
- * POST /v1beta/models/{model}:streamGenerateContent  — streaming (SSE)
+ * GET /v1beta/models/{model} (and /v1beta/models/{provider}/{model})
  *
- * Streaming intent is determined by the URL action suffix (canonical Gemini API
- * convention), NOT by a body field. generationConfig.stream is not a real
- * Gemini API field and Gemini CLI never sets it.
+ * Google SDKs call this to describe a model. Returning metadata keeps
+ * `client.models.get()` working; without it Next answers 405 and some clients
+ * abort before the first chat request.
+ */
+export async function GET(_request, { params }) {
+  const { path } = await params;
+  const requested = (path || []).join("/").replace(/:.*$/, "");
+  if (!requested) return googleError("Missing model in URL", 400);
+
+  const segments = requested.split("/");
+  let provider = null;
+  let entry = null;
+
+  if (segments.length >= 2) {
+    provider = segments[0];
+    const modelId = segments.slice(1).join("/");
+    entry = (PROVIDER_MODELS[provider] || []).find((model) => model.id === modelId) || null;
+  } else {
+    entry = Object.values(PROVIDER_MODELS)
+      .flat()
+      .find((model) => model.id === requested) || null;
+  }
+
+  if (!entry) {
+    return googleError(`Model not found: ${requested}`, 404);
+  }
+
+  return Response.json(
+    {
+      name: `models/${requested}`,
+      displayName: entry.name || entry.id,
+      description: provider ? `${provider} model: ${entry.name || entry.id}` : undefined,
+      supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+      inputTokenLimit: 128000,
+      outputTokenLimit: 8192,
+    },
+    { headers: { "Access-Control-Allow-Origin": "*" } }
+  );
+}
+
+/**
+ * The Gemini endpoint is a native passthrough.
  *
- * The @google/genai SDK always uses :streamGenerateContent?alt=sse for chat.
- * The upstream handleChat returns OpenAI SSE format; we transform it to
- * Gemini SSE format on the fly via transformOpenAISSEToGeminiSSE().
+ * The client body is a GenerateContentRequest and is handed to `handleChat`
+ * untouched apart from the routing fields (`model`, `stream`). The engine then
+ * picks one of two paths:
+ *
+ *   - Gemini-family target (antigravity, gemini-cli, gemini, vertex): a direct
+ *     `gemini:target` translator only places the payload inside the vendor
+ *     envelope, so `tools`, `inlineData`, `responseSchema` and thought
+ *     signatures survive end to end.
+ *   - Any other target (combo members on another wire): the regular
+ *     Gemini → OpenAI → target bridge runs, and the answer comes back through
+ *     the `openai:gemini` response translator.
+ *
+ * Nothing is rebuilt into `messages[]` here, which is what previously dropped
+ * tool declarations and inline media.
  */
 export async function POST(request, { params }) {
   await ensureInitialized();
 
   try {
     const { path } = await params;
-    // path = ["provider", "model:action"] or ["model:action"]
+    // path = ["provider", "model:action"] or ["model:action"];
+    // combos and bare model ids are single-segment names too.
 
-    let model;
-    let action; // ":generateContent" | ":streamGenerateContent"
-
-    if (path.length >= 2) {
-      // Format: /v1beta/models/provider/model:generateContent
-      const provider = path[0];
-      const modelAction = path[1];
-      action = modelAction.includes(":streamGenerateContent")
-        ? ":streamGenerateContent"
-        : ":generateContent";
-      const modelName = modelAction
-        .replace(":streamGenerateContent", "")
-        .replace(":generateContent", "");
-      model = provider + "/" + modelName;
-    } else {
-      // Format: /v1beta/models/model:generateContent
-      const modelAction = path[0];
-      action = modelAction.includes(":streamGenerateContent")
-        ? ":streamGenerateContent"
-        : ":generateContent";
-      model = modelAction
-        .replace(":streamGenerateContent", "")
-        .replace(":generateContent", "");
+    if (!Array.isArray(path) || path.length === 0) {
+      return googleError("Missing model in URL", 400);
     }
 
+    const modelAction = String(path[path.length - 1] || "");
+    const actionMatch = modelAction.match(GEMINI_ACTION_PATTERN);
+    if (!actionMatch) {
+      return googleError(`Unsupported method on model "${modelAction}"`, 404);
+    }
+
+    const action = `:${actionMatch[1]}`;
+    const modelName = modelAction.slice(0, actionMatch.index);
+    if (!modelName) {
+      return googleError("Missing model in URL", 400);
+    }
+
+    // /v1beta/models/{provider}/{model}:generateContent addresses a provider
+    // explicitly; /v1beta/models/{model}:generateContent addresses a combo or a
+    // bare model id.
+    const model = path.length >= 2 ? `${path[0]}/${modelName}` : modelName;
+
     const body = await request.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return googleError("Request body must be a JSON object", 400);
+    }
 
     if (isGeminiNativeTtsRequest(model, body)) {
       return await forwardGeminiNativeRequest(request, body, model, action);
     }
 
-    // Streaming is determined by URL action suffix:
-    //   :streamGenerateContent => stream: true  (SSE)
-    //   :generateContent       => stream: false (plain JSON)
+    if (action === ":countTokens" || action === ":computeTokens") {
+      return googleError("countTokens is not supported by 9router", 400);
+    }
+    if (action === ":embedContent" || action === ":batchEmbedContents") {
+      return googleError("Use POST /v1/embeddings for embeddings", 400);
+    }
+    if (action === ":predict") {
+      return googleError("predict is not supported by 9router", 400);
+    }
+
+    // Streaming intent comes from the URL action suffix (canonical Gemini
+    // convention); generationConfig has no stream field.
     const stream = action === ":streamGenerateContent";
 
-    // Convert Gemini request format to OpenAI/internal format
-    const convertedBody = convertGeminiToInternal(body, model, stream);
+    const routedBody = { ...body, model, stream };
 
-    // Create new request with converted body
     const newRequest = new Request(request.url, {
       method: "POST",
       headers: request.headers,
-      body: JSON.stringify(convertedBody),
+      body: JSON.stringify(routedBody),
     });
 
     const response = await handleChat(newRequest);
-
-    if (stream) {
-      // Transform OpenAI SSE => Gemini SSE on the fly.
-      // The @google/genai SDK always uses :streamGenerateContent?alt=sse and
-      // expects Gemini SSE chunks (no [DONE] sentinel — stream just closes).
-      return transformOpenAISSEToGeminiSSE(response, model);
-    } else {
-      // Convert OpenAI JSON response => Gemini GenerateContentResponse
-      return await convertOpenAIResponseToGemini(response, model);
-    }
+    return withCors(await shapeGoogleError(response));
   } catch (error) {
     console.log("Error handling Gemini request:", error);
-    return Response.json(
-      { error: { message: error.message, code: 500 } },
-      { status: 500 }
-    );
+    return googleError(error.message || "Internal error", 500);
   }
+}
+
+/** Keep the Gemini endpoint's CORS contract regardless of which layer answered. */
+function withCors(response) {
+  const headers = new Headers(response.headers);
+  if (!headers.has("Access-Control-Allow-Origin")) {
+    headers.set("Access-Control-Allow-Origin", "*");
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+/**
+ * Gemini SDKs parse Google error envelopes; the engine answers in OpenAI shape.
+ * Preserve Google envelopes (errors already coming from an upstream Gemini call)
+ * and translate everything else.
+ */
+async function shapeGoogleError(response) {
+  if (response.ok) return response;
+
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) return response;
+
+  let payload;
+  try {
+    payload = await response.clone().json();
+  } catch {
+    return response;
+  }
+
+  if (payload?.error?.code !== undefined && payload?.error?.status) {
+    return response;
+  }
+
+  const rawMessage = payload?.error?.message ?? payload?.error ?? payload?.message;
+  const message = typeof rawMessage === "string" && rawMessage
+    ? rawMessage
+    : `Upstream request failed (${response.status})`;
+
+  const headers = new Headers(response.headers);
+  headers.set("Content-Type", "application/json");
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.delete("content-length");
+  return new Response(
+    JSON.stringify({
+      error: {
+        code: response.status,
+        message,
+        status: GOOGLE_ERROR_STATUS[response.status] || "UNKNOWN",
+      },
+    }),
+    { status: response.status, statusText: response.statusText, headers }
+  );
 }
 
 function extractGeminiClientApiKey(request) {
@@ -368,224 +496,4 @@ async function forwardGeminiNativeRequest(request, body, model, action) {
       headers: corsHeadersFrom(upstreamResponse),
     });
   }
-}
-
-/**
- * Convert Gemini request format to OpenAI/internal format.
- *
- * @param {object} geminiBody  - parsed Gemini request body
- * @param {string} model       - resolved model string (e.g. "gemini-pro-high")
- * @param {boolean} stream     - whether to stream (from URL action)
- */
-function convertGeminiToInternal(geminiBody, model, stream) {
-  const messages = [];
-
-  // Convert system instruction
-  if (geminiBody.systemInstruction) {
-    const systemText = geminiBody.systemInstruction.parts
-      ?.map(p => p.text)
-      .join("\n") || "";
-    if (systemText) {
-      messages.push({ role: "system", content: systemText });
-    }
-  }
-
-  // Convert contents to messages
-  if (geminiBody.contents) {
-    for (const content of geminiBody.contents) {
-      const role = content.role === "model" ? "assistant" : "user";
-      const text = content.parts?.map(p => p.text).join("\n") || "";
-      messages.push({ role, content: text });
-    }
-  }
-
-  return {
-    model,
-    messages,
-    stream,
-    max_tokens: geminiBody.generationConfig?.maxOutputTokens,
-    temperature: geminiBody.generationConfig?.temperature,
-    top_p: geminiBody.generationConfig?.topP,
-  };
-}
-
-/** Map OpenAI finish_reason => Gemini finishReason */
-const FINISH_REASON_MAP = {
-  stop: "STOP",
-  length: "MAX_TOKENS",
-  tool_calls: "STOP",
-  content_filter: "SAFETY",
-};
-
-/**
- * Transform an OpenAI SSE stream into a Gemini SSE stream.
- *
- * OpenAI SSE format (what handleChat returns):
- *   data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
- *   data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{...}}
- *   data: [DONE]
- *
- * Gemini SSE format (what @google/genai SDK expects):
- *   data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]},"index":0}]}
- *   data: {"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP","index":0}],"usageMetadata":{...}}
- *   (stream closes — no [DONE])
- */
-function transformOpenAISSEToGeminiSSE(upstreamResponse, model) {
-  if (!upstreamResponse.ok || !upstreamResponse.body) {
-    return upstreamResponse;
-  }
-
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-
-  const transformStream = new TransformStream({
-    transform(chunk, controller) {
-      const text = decoder.decode(chunk, { stream: true });
-      const lines = text.split("\n");
-
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-
-        const data = line.slice(5).trim();
-
-        // Drop empty lines and the OpenAI [DONE] sentinel.
-        // Gemini SSE ends by stream close, no sentinel needed.
-        if (!data || data === "[DONE]") continue;
-
-        let parsed;
-        try {
-          parsed = JSON.parse(data);
-        } catch {
-          continue;
-        }
-
-        const choice = parsed.choices?.[0];
-        if (!choice) continue;
-
-        const delta = choice.delta || {};
-
-        const parts = [];
-        if (delta.reasoning_content) {
-          parts.push({ text: delta.reasoning_content, thought: true });
-        }
-        if (delta.content) {
-          parts.push({ text: delta.content });
-        }
-
-        // Skip pure role-only deltas with no content and no finish signal
-        if (parts.length === 0 && !choice.finish_reason) continue;
-
-        const candidate = {
-          content: {
-            role: "model",
-            parts: parts.length > 0 ? parts : [{ text: "" }],
-          },
-          index: 0,
-        };
-
-        if (choice.finish_reason) {
-          candidate.finishReason = FINISH_REASON_MAP[choice.finish_reason] || "STOP";
-        }
-
-        const geminiChunk = { candidates: [candidate] };
-
-        // Attach usage + modelVersion on the final chunk (when finish_reason is set)
-        if (choice.finish_reason && parsed.usage) {
-          geminiChunk.usageMetadata = {
-            promptTokenCount: parsed.usage.prompt_tokens || 0,
-            candidatesTokenCount: parsed.usage.completion_tokens || 0,
-            totalTokenCount: parsed.usage.total_tokens || 0,
-          };
-          const reasoningTokens =
-            parsed.usage.completion_tokens_details?.reasoning_tokens;
-          if (reasoningTokens) {
-            geminiChunk.usageMetadata.thoughtsTokenCount = reasoningTokens;
-          }
-          geminiChunk.modelVersion = parsed.model || model;
-        }
-
-        controller.enqueue(
-          encoder.encode("data: " + JSON.stringify(geminiChunk) + "\r\n\r\n")
-        );
-      }
-    },
-    // No flush() needed: Gemini SSE ends by stream close, not a sentinel
-  });
-
-  return new Response(upstreamResponse.body.pipeThrough(transformStream), {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Access-Control-Allow-Origin": "*",
-    },
-  });
-}
-
-/**
- * Convert an OpenAI chat.completion JSON response into a Gemini
- * GenerateContentResponse so that Gemini CLI can parse it.
- */
-async function convertOpenAIResponseToGemini(response, model) {
-  if (!response.ok) return response;
-
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    return response;
-  }
-
-  if (body.candidates) return Response.json(body, {
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-  });
-
-  if (body.error) return Response.json(body, {
-    status: response.status,
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-  });
-
-  const choice = body.choices?.[0];
-  if (!choice) {
-    return Response.json(body, {
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-    });
-  }
-
-  const { message, finish_reason } = choice;
-
-  const parts = [];
-  if (message.reasoning_content) {
-    parts.push({ text: message.reasoning_content, thought: true });
-  }
-  parts.push({ text: message.content || "" });
-
-  const finishReason = FINISH_REASON_MAP[finish_reason] || "STOP";
-
-  const geminiResponse = {
-    candidates: [
-      {
-        content: { role: "model", parts },
-        finishReason,
-        index: 0,
-      },
-    ],
-    modelVersion: body.model || model,
-  };
-
-  if (body.usage) {
-    geminiResponse.usageMetadata = {
-      promptTokenCount: body.usage.prompt_tokens || 0,
-      candidatesTokenCount: body.usage.completion_tokens || 0,
-      totalTokenCount: body.usage.total_tokens || 0,
-    };
-    const reasoningTokens = body.usage.completion_tokens_details?.reasoning_tokens;
-    if (reasoningTokens) {
-      geminiResponse.usageMetadata.thoughtsTokenCount = reasoningTokens;
-    }
-  }
-
-  return Response.json(geminiResponse, {
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-  });
 }

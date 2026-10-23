@@ -339,6 +339,9 @@ export class AntigravityExecutor extends BaseExecutor {
     // with quota available. `image_gen` and
     // `search` buckets are unaffected and keep their own requestType.
     delete body.requestType;
+    // `stream` is 9router serialization and is not valid on the v1internal
+    // envelope; a Gemini-native client body reaches here with it still attached.
+    delete body.stream;
 
     return {
       ...body,
