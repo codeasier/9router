@@ -121,6 +121,8 @@ describe("dashboard image example parameters", () => {
       background: "auto",
       image_detail: "high",
       output_format: "png",
+      watermark: true,
+      prompt_extend: true,
     });
     expect(result.error).toBe("");
   });

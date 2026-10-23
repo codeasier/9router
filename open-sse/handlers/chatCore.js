@@ -112,7 +112,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
   }
 
-  const upstreamModel = getModelUpstreamId(alias, model, body);
+  // Tiered upstream ids must use the same gateway-forced intent as translation,
+  // including precedence over a client effort or model suffix.
+  let upstreamThinkingBody = body;
+  if (forcedThinking) {
+    upstreamThinkingBody = {};
+    applyThinking(FORMATS.OPENAI, model, upstreamThinkingBody, provider, forcedThinking);
+  }
+  const upstreamModel = getModelUpstreamId(alias, forcedThinking ? stripThinkingSuffix(model) : model, upstreamThinkingBody);
 
   // Per-request opt-out: client can bypass all token savers via header
   const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";

@@ -128,7 +128,7 @@ describe("Cursor live model catalog", () => {
   it("supports an injected HTTP/2 proxy transport and caches it", async () => {
     const payload = concat(model("claude-4.6-opus", "Claude 4.6 Opus"));
     const http2Post = vi.fn().mockResolvedValue({ status: 200, body: payload });
-    const credentials = { accessToken: "cursor-token" };
+    const credentials = { accessToken: "cursor-token", providerSpecificData: { machineId: "machine-id" } };
     await expect(resolveCursorModels(credentials, { http2Post })).resolves.toEqual({
       models: [{ id: "claude-4.6-opus", name: "Claude 4.6 Opus" }],
     });

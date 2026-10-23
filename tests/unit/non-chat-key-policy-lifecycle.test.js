@@ -177,7 +177,15 @@ describe.each(endpoints)("$name key-policy lifecycle", (endpoint) => {
   it("releases when the upstream core throws", async () => {
     const error = new Error("offline upstream failed");
     endpoint.core.mockRejectedValueOnce(error);
-    await expect(endpoint.handle(endpoint.request())).rejects.toBe(error);
+    if (endpoint.name === "stt") {
+      // The official STT handler catches transport failures and returns a 502.
+      const response = await endpoint.handle(endpoint.request());
+      expect(response.status).toBe(502);
+      expect(inflight()).toBe(0);
+      await response.body.cancel();
+    } else {
+      await expect(endpoint.handle(endpoint.request())).rejects.toBe(error);
+    }
     expect(inflight()).toBe(0);
     const retry = await endpoint.handle(endpoint.request());
     expect(retry.status).toBe(200);
