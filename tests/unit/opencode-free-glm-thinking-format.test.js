@@ -33,6 +33,7 @@ describe("OpenCode free GLM-5.3-Flash travels as OpenAI reasoning_effort", () =>
     const body = { reasoning_effort: "high" };
     applyThinking("openai", "glm-5.3-flash", body, "glm");
     expect(body.thinking).toEqual({ type: "enabled" });
-    expect(body.reasoning_effort).toBeUndefined();
+    // The fork also supports GLM 5.3 effort levels alongside its native switch.
+    expect(body.reasoning_effort).toBe("high");
   });
 });

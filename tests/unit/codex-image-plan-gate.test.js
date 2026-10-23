@@ -17,6 +17,7 @@ vi.mock("../../src/sse/services/auth.js", () => ({
 
 vi.mock("@/lib/localDb", () => ({
   getSettings: async () => ({ requireApiKey: false }),
+  getApiKeyByKey: async () => null,
 }));
 
 vi.mock("../../src/sse/services/model.js", () => ({

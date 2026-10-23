@@ -7,8 +7,8 @@ const credentials = {
   connectionId: "offline-connection", authType: "oauth", accessToken: "offline-old-token", refreshToken: "offline-refresh",
   expiresAt: "2000-01-01T00:00:00.000Z", providerSpecificData: { workspaceId: "workspace", customMetadata: "preserve-me" },
 };
-vi.mock("@/lib/localDb", () => ({ getSettings: async () => ({ requireApiKey: true }), getProviderConnectionById: mocks.latest, updateProviderConnection: mocks.update }));
-vi.mock("@/lib/localDb.js", () => ({ getSettings: async () => ({ requireApiKey: true }), getProviderConnectionById: mocks.latest, updateProviderConnection: mocks.update }));
+vi.mock("@/lib/localDb", () => ({ getSettings: async () => ({ requireApiKey: true }), getApiKeyByKey: async () => null, getProviderConnectionById: mocks.latest, updateProviderConnection: mocks.update }));
+vi.mock("@/lib/localDb.js", () => ({ getSettings: async () => ({ requireApiKey: true }), getApiKeyByKey: async () => null, getProviderConnectionById: mocks.latest, updateProviderConnection: mocks.update }));
 vi.mock("@/sse/services/auth.js", () => ({ extractApiKey: () => "offline-key", isValidApiKey: async () => true, getProviderCredentials: async () => credentials, clearAccountError: async () => {}, markAccountUnavailable: async () => ({ shouldFallback: false }) }));
 vi.mock("open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (url, options) => options.directFetch(url, options) }));
 vi.mock("@/sse/services/model.js", () => ({ getModelInfo: async () => ({ provider: "codex", model: "transcribe" }) }));
