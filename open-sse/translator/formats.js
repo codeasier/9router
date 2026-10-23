@@ -20,6 +20,11 @@ export const FORMATS = {
  * Returns null to fall back to body-based detection.
  */
 export function detectFormatByEndpoint(pathname, body) {
+  // /v1beta/models/{model}:generateContent is the Gemini wire, whatever the body
+  // looks like. Pinning it here keeps a native Gemini client on the lossless
+  // path (GEMINI → gemini-family targets) instead of body sniffing.
+  if (pathname.includes("/v1beta/")) return FORMATS.GEMINI;
+
   // /v1/responses is always openai-responses
   if (pathname.includes("/v1/responses")) return FORMATS.OPENAI_RESPONSES;
 
