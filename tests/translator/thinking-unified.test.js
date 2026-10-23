@@ -314,13 +314,15 @@ describe("OpenCode Free ids with no capabilities entry (#2690)", () => {
   it("keeps the client reasoning_effort for space-bunny-free", () => {
     for (const level of ["low", "medium", "high", "xhigh", "none"]) {
       expect(apply("openai", "oc/space-bunny-free", bunny(level), "oc").reasoning_effort).toBe(level);
-      expect(apply("openai-responses", "oc/space-bunny-free", bunny(level), "oc").reasoning_effort).toBe(level);
+      const responses = apply("openai-responses", "oc/space-bunny-free", bunny(level), "oc");
+      expect(responses.reasoning_effort).toBeUndefined();
+      expect(responses.reasoning?.effort).toBe(level === "none" ? undefined : level);
     }
   });
 
   it("clamps max to xhigh (openai format has no max)", () => {
     expect(apply("openai", "oc/space-bunny-free", bunny("max"), "oc").reasoning_effort).toBe("xhigh");
-    expect(apply("openai-responses", "oc/space-bunny-free", bunny("max"), "oc").reasoning_effort).toBe("xhigh");
+    expect(apply("openai-responses", "oc/space-bunny-free", bunny("max"), "oc").reasoning.effort).toBe("xhigh");
   });
 
   it("still strips it for a model that has no entry at all (control)", () => {
@@ -363,8 +365,9 @@ describe("transport-declared thinkingFormat (Responses endpoints)", () => {
     expect(out.reasoning_effort).toBeUndefined();
   });
 
-  it("a provider without the declaration keeps its existing Responses behaviour (control)", () => {
+  it("the fork uses nested reasoning on Responses even without a transport declaration", () => {
     const out = apply("openai-responses", "oc/space-bunny-free", chatBody("high"), "oc");
-    expect(out.reasoning_effort).toBe("high");
+    expect(out.reasoning_effort).toBeUndefined();
+    expect(out.reasoning).toEqual({ effort: "high", summary: "auto" });
   });
 });

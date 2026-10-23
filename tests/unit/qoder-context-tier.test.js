@@ -39,10 +39,10 @@ function promptOfTokens(n) {
 describe("Qoder opaque model capabilities", () => {
   it.each(["qoder", "qoder-cn"])("preserves %s vision and reasoning metadata", (provider) => {
     expect(getCapabilitiesForModel(provider, "qmodel_38max")).toMatchObject({
-      vision: true, reasoning: true, thinkingFormat: "qwen", thinkingCanDisable: false, contextWindow: 1000000,
+      vision: true, reasoning: true, thinkingFormat: "qwen", thinkingCanDisable: false, contextWindow: 200000,
     });
     expect(getCapabilitiesForModel(provider, "dfmodel")).toMatchObject({
-      vision: false, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000,
+      vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 200000,
     });
   });
 });
