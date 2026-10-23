@@ -54,6 +54,35 @@ describe("handleChatCore per-model overrides", () => {
     executeMock.mockResolvedValue(jsonResponse());
   });
 
+  it.each([
+    { clientEffort: "low", connectionThinking: undefined, model: "gemini-3.8-flash", level: "high" },
+    { clientEffort: undefined, connectionThinking: undefined, model: "gemini-3.8-flash", level: "high" },
+    { clientEffort: "high", connectionThinking: "low", model: "gemini-3.8-flash", level: "low" },
+    { clientEffort: "low", connectionThinking: undefined, model: "gemini-3.8-flash(low)", level: "high" },
+  ])("selects the same Antigravity tier as forced thinking: $model / $clientEffort / $connectionThinking", async ({ clientEffort, connectionThinking, model, level }) => {
+    const body = {
+      model: `ag/${model}`,
+      stream: false,
+      reasoning_effort: clientEffort,
+      messages: [{ role: "user", content: "hi" }],
+    };
+    await handleChatCore({
+      body,
+      modelInfo: { provider: "antigravity", model },
+      credentials: {
+        accessToken: "test-token",
+        providerSpecificData: { modelConfigs: { "gemini-3.8-flash": { thinking: connectionThinking } } },
+      },
+      modelOverrides: { "antigravity/gemini-3.8-flash": { thinking: "high" } },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
+      clientRawRequest: { endpoint: "/v1/chat/completions", body, headers: { accept: "application/json" } },
+    });
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const call = executeMock.mock.calls[0][0];
+    expect(call.body.model).toBe(`gemini-3.8-flash-${level}`);
+    expect(call.body.request.generationConfig.thinkingConfig.thinkingLevel).toBe(level);
+  });
+
   it("forces chat transport + max thinking for opencode-go/deepseek-v4-flash", async () => {
     const credentials = { apiKey: "test-key", providerSpecificData: {} };
     const body = {
