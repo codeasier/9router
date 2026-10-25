@@ -6,6 +6,8 @@ import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { resolveSessionId, toNumericSessionId } from "../utils/sessionManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { cleanJSONSchemaForAntigravity, normalizeGeminiContents } from "../translator/formats/gemini.js";
+import { normalizeGeminiToolCallIds } from "../translator/concerns/geminiToolCall.js";
+import { GEMINI_ROLE } from "../translator/schema/roles.js";
 import { DEFAULT_THINKING_AG_SIGNATURE } from "../config/defaultThinkingSignature.js";
 import { getGeminiThoughtSignatureSync } from "../services/thoughtSignatureStore.js";
 
@@ -170,6 +172,9 @@ export class AntigravityExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body, stream, credentials) {
+    // Native payloads share nested client objects. Keep envelope cleanup local;
+    // mutable nested fields below use copy-on-write rather than cloning history.
+    body = { ...body };
     const projectId = credentials?.projectId || this.generateProjectId();
 
     // OpenAI clients may include stream_options even for non-streaming calls.
@@ -233,11 +238,12 @@ export class AntigravityExecutor extends BaseExecutor {
     // ─── Standard (non-image) request ───
     // Fix contents for Claude models via Antigravity
     const rawContents = (body.request?.contents || []).map(c => {
-      let role = c.role;
-      // functionResponse must be role "user" for Claude models
-      if (c.parts?.some(p => p.functionResponse)) {
-        role = "user";
-      }
+      // Tool results must be user turns even when clients label them as model.
+      // Otherwise preserve explicit roles, inferring Google's optional role
+      // before normalizeGeminiContents can discard a role-less turn.
+      const role = c.parts?.some(p => p.functionResponse)
+        ? GEMINI_ROLE.USER
+        : c.role || (c.parts?.some(p => p.functionCall) ? GEMINI_ROLE.MODEL : GEMINI_ROLE.USER);
       // Strip thought-only parts, keep thoughtSignature on functionCall parts (Gemini 3+ requires it)
       const parts = c.parts?.filter(p => {
         if (p.thought && !p.functionCall) return false;
@@ -271,7 +277,25 @@ export class AntigravityExecutor extends BaseExecutor {
         parts: modifiedParts || parts || [],
       };
     });
-    const contents = normalizeGeminiContents(rawContents, model);
+    let normalizedContents = rawContents;
+    if (String(model).toLowerCase().includes("claude")) {
+      // Signatures above were resolved using ORIGINAL IDs. Reconcile IDs/names
+      // only now; native Gemini IDs can be opaque and must bypass this pass.
+      normalizedContents = normalizeGeminiToolCallIds(rawContents).map(c => ({
+        ...c,
+        parts: c.parts.map(p => {
+          let part = p;
+          if (p.functionCall) {
+            part = { ...part, functionCall: { ...p.functionCall, name: sanitizeFunctionName(p.functionCall.name) } };
+          }
+          if (p.functionResponse) {
+            part = { ...part, functionResponse: { ...p.functionResponse, name: sanitizeFunctionName(p.functionResponse.name) } };
+          }
+          return part;
+        }),
+      }));
+    }
+    const contents = normalizeGeminiContents(normalizedContents, model);
 
     // Sanitize tool schemas and function names before sending to Antigravity.
     let tools = body.request?.tools;
@@ -304,12 +328,17 @@ export class AntigravityExecutor extends BaseExecutor {
     // Rewrite competing-client branding in system prompts (e.g. Zed's Claude prompt,
     // OpenCode naming) so Antigravity doesn't flag the request with a 429 Quota Exhausted.
     if (requestWithoutTools.systemInstruction?.parts) {
-      for (const part of requestWithoutTools.systemInstruction.parts) {
-        if (typeof part.text !== "string") continue;
-        for (const { from, to } of ANTIGRAVITY_PROMPT_REWRITES) {
-          part.text = part.text.replaceAll(from, to);
-        }
-      }
+      requestWithoutTools.systemInstruction = {
+        ...requestWithoutTools.systemInstruction,
+        parts: requestWithoutTools.systemInstruction.parts.map(part => {
+          if (typeof part.text !== "string") return part;
+          let text = part.text;
+          for (const { from, to } of ANTIGRAVITY_PROMPT_REWRITES) {
+            text = text.replaceAll(from, to);
+          }
+          return { ...part, text };
+        }),
+      };
     }
 
     const generationConfig = { ...(requestWithoutTools.generationConfig || {}) };
