@@ -5,11 +5,12 @@ import { cloakClaudeTools, decloakStreamChunk } from "../utils/claudeCloaking.js
 import { restoreToolNames } from "../utils/opencodeFingerprint.js";
 import { filterToOpenAIFormat } from "./formats/openai.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
-import { applyThinking, captureThinking } from "./concerns/thinkingUnified.js";
+import { applyThinking, captureThinking, parseSuffix } from "./concerns/thinkingUnified.js";
 import { captureSessionId } from "../utils/sessionManager.js";
 import { ensureStreamToolCallIds } from "../utils/streamHelpers.js";
 import { AntigravityExecutor } from "../executors/antigravity.js";
 import { PROVIDERS } from "../providers/index.js";
+import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { ROLE, GEMINI_ROLE } from "./schema/roles.js";
 
 // Registry for translators. Lazy-init guards against circular-import order:
@@ -135,7 +136,16 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   const kiroThinkingMappedByTranslator =
     targetFormat === FORMATS.KIRO &&
     (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.CLAUDE);
-  if (!kiroThinkingMappedByTranslator) {
+  const { cleanModel, override } = parseSuffix(model);
+  // Native Google config already matches Antigravity's wire. Re-encoding loses
+  // includeThoughts and forward-compatible fields. Explicit overrides and caps
+  // still take the normal path, with gateway force taking priority over suffix.
+  const preserveNativeAntigravityThinking =
+    sourceFormat === FORMATS.GEMINI && targetFormat === FORMATS.ANTIGRAVITY &&
+    result.request?.generationConfig?.thinkingConfig &&
+    typeof result.request.generationConfig.thinkingConfig === "object" &&
+    !thinkingForce && !override && getCapabilitiesForModel(provider, cleanModel).reasoning;
+  if (!kiroThinkingMappedByTranslator && !preserveNativeAntigravityThinking) {
     applyThinking(targetFormat, model, result, provider, thinkingIntent);
   }
 
