@@ -12,8 +12,6 @@
 // the payload is copied, never rebuilt.
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { geminiToOpenAIRequest } from "./gemini-to-openai.js";
-import { openaiToAntigravityRequest } from "./openai-to-gemini.js";
 
 // 9router routing/serialisation fields. They are not part of
 // GenerateContentRequest and Google rejects unknown top-level names.
@@ -29,9 +27,9 @@ const GATEWAY_ONLY_FIELDS = new Set([
 
 /**
  * Copy the client's GenerateContentRequest without gateway-only fields.
- * Everything else (contents, tools, toolConfig, systemInstruction,
- * generationConfig, safetySettings, cachedContent, labels, …) is preserved by
- * reference so nested structures keep their exact shape.
+ * Nested structures keep their exact shape and are shared, except for the
+ * generationConfig container: the shared thinking post-processor can rewrite
+ * its fields, so detach that container without deep-copying client history.
  */
 export function geminiNativePayload(body) {
   const payload = {};
@@ -39,7 +37,9 @@ export function geminiNativePayload(body) {
   for (const [key, value] of Object.entries(body)) {
     if (value === undefined) continue;
     if (GATEWAY_ONLY_FIELDS.has(key)) continue;
-    payload[key] = value;
+    payload[key] = key === "generationConfig" && value && typeof value === "object"
+      ? { ...value }
+      : value;
   }
   return payload;
 }
@@ -48,14 +48,12 @@ export function geminiNativePayload(body) {
  * Antigravity's executor reads `body.request.{contents,tools}` and builds the
  * `v1internal` envelope itself, so hand it `{ model, request: <payload> }`.
  *
- * Claude models on Antigravity speak the Claude wire (`messages`), not
- * `contents`; those fall back to the bridge (Gemini → OpenAI → Claude) because
- * the native payload would be rejected upstream.
+ * All Antigravity models, including Claude, use this Google wire (`contents`).
+ * Claude `messages` are only an internal bridge representation, not the upstream
+ * protocol. The executor owns provider compatibility (IDs/names, schemas,
+ * signatures, session/envelope fields); never rebuild native client contents.
  */
-export function geminiToAntigravityRequest(model, body, stream, credentials = null) {
-  if (String(model).toLowerCase().includes("claude")) {
-    return openaiToAntigravityRequest(model, geminiToOpenAIRequest(model, body, stream), stream, credentials);
-  }
+export function geminiToAntigravityRequest(model, body) {
   return { model, request: geminiNativePayload(body) };
 }
 
