@@ -329,7 +329,8 @@ describe("getUsageForProvider(volceapi)", () => {
       getUsageForProvider({ provider: "volceapi", apiKey: "sk-b" }),
       getUsageForProvider({ provider: "volceapi", apiKey: "sk-c" }),
     ]);
-    expect(peak).toBeLessThanOrEqual(12);
+    // Pinned to the deployed ceiling: 70 requests at 12 in flight fail upstream.
+    expect(peak).toBeLessThanOrEqual(6);
     expect(peak).toBeGreaterThan(1);
   });
 });

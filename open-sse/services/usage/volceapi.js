@@ -31,7 +31,9 @@ const REQUEST_TIMEOUT_MS = 5000;
 const REQUEST_MAX_ATTEMPTS = 3;
 const REQUEST_BUDGET_MS = 12000;
 const RETRY_BASE_DELAY_MS = 300;
-const MAX_IN_FLIGHT = 12;
+// Measured against the live gateway: 70 refresh requests at 6 in flight all
+// answer 200; at 12 in flight eight of them return function_dial_timeout.
+const MAX_IN_FLIGHT = 6;
 const RETRYABLE_STATUSES = new Set([408, 425, 429]);
 
 function jsonResponse(response) {
