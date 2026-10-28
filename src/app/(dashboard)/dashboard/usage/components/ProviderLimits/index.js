@@ -6,6 +6,7 @@ import ProviderIcon from "@/shared/components/ProviderIcon";
 import ConnectionQuotaCard, { formatClaudeResetClears, claudeGrantStatus } from "./ConnectionQuotaCard";
 import {
   parseQuotaData,
+  mergeTransientQuotaRows,
   isDepletedQuotaRow,
   getQuotaVisibilityKey,
   getConnectionLabel,
@@ -351,6 +352,9 @@ export default function ProviderLimits() {
   const intervalRef = useRef(null);
   const countdownRef = useRef(null);
   const tickCountRef = useRef(0);
+  // Last non-empty snapshot per connection — the fallback when a refresh only
+  // brings a transient upstream failure.
+  const quotaGoodRef = useRef({});
 
   const fetchConnections = useCallback(
     async (targetPage = page) => {
@@ -451,14 +455,39 @@ export default function ProviderLimits() {
         plan: data.plan || null,
         message: data.message || null,
         raw: data,
+        fetchedAt: new Date().toISOString(),
       };
+
+      // An upstream blip must not erase numbers that were just on screen. When
+      // the provider marks the answer transient, fill every missing window from
+      // the last good snapshot and say which rows are old.
+      const previousGood = quotaGoodRef.current[connectionId];
+      const { rows, staleWindows } = mergeTransientQuotaRows({
+        previousRows: previousGood?.quotas || [],
+        incomingRows: parsedQuotas,
+        transient: data.transient === true,
+      });
+      let entry = quotaEntry;
+      if (staleWindows.length > 0) {
+        entry = {
+          ...quotaEntry,
+          quotas: rows,
+          stale: true,
+          staleAt: previousGood.staleAt || previousGood.fetchedAt || null,
+          staleWindows,
+          message: quotaEntry.message || previousGood.message,
+          raw: { ...data, note: data.note || previousGood.raw?.note },
+        };
+      } else if (parsedQuotas.length > 0) {
+        quotaGoodRef.current[connectionId] = quotaEntry;
+      }
 
       setQuotaData((prev) => ({
         ...prev,
-        [connectionId]: quotaEntry,
+        [connectionId]: entry,
       }));
-      setQuotaCache(connectionId, quotaEntry);
-      return quotaEntry;
+      setQuotaCache(connectionId, entry);
+      return entry;
     } catch (error) {
       console.error(
         `[ProviderLimits] Error fetching quota for ${provider} (${connectionId}):`,
@@ -577,6 +606,7 @@ export default function ProviderLimits() {
             delete next[id];
             return next;
           });
+          delete quotaGoodRef.current[id];
 
           if (typeof window !== "undefined") {
             try {
