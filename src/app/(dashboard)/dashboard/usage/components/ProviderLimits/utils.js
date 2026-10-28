@@ -403,6 +403,28 @@ export function filterQuotasForCard(provider, quotas = [], quotaVisibility = {})
     .filter((quota) => !isTokenUsageQuotaRow(quota));
 }
 
+/**
+ * Keep the last rendered rows for windows a transient upstream failure dropped.
+ * Providers that report `transient` on a flaky usage API would otherwise erase
+ * a day/week/month row (or the whole card) on a single failed request.
+ * Returns the rows to render plus the names that came from the older snapshot.
+ */
+export function mergeTransientQuotaRows({ previousRows = [], incomingRows = [], transient = false } = {}) {
+  const incomingNames = new Set(incomingRows.map((row) => row?.name));
+  const staleWindows = transient
+    ? previousRows.filter((row) => !incomingNames.has(row?.name)).map((row) => row?.name)
+    : [];
+  if (!staleWindows.length) return { rows: incomingRows, staleWindows };
+
+  const incomingByName = new Map(incomingRows.map((row) => [row?.name, row]));
+  const merged = previousRows.map((row) => incomingByName.get(row?.name) || row);
+  const previousNames = new Set(previousRows.map((row) => row?.name));
+  for (const row of incomingRows) {
+    if (!previousNames.has(row?.name)) merged.push(row);
+  }
+  return { rows: merged, staleWindows };
+}
+
 export function getGroupLowestRemaining(connections, quotaData) {
   let lowest = Number.POSITIVE_INFINITY;
   for (const conn of connections || []) {

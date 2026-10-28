@@ -20,6 +20,7 @@ import {
   parseQuotaData,
   buildVolceapiQuotaLimitsPayload,
   sanitizeVolceapiQuotaLimits,
+  mergeTransientQuotaRows,
 } from "../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
 function jsonResponse(body, status = 200) {
@@ -256,6 +257,81 @@ describe("getUsageForProvider(volceapi)", () => {
     expect(auth.message).toMatch(/auth|key/i);
     expect(auth.quotas).toBeUndefined();
   });
+
+  it("retries a gateway function_dial_timeout instead of blanking the window", async () => {
+    let todaySummaryCalls = 0;
+    proxyAwareFetch.mockImplementation(async (url) => {
+      const href = String(url);
+      if (href.includes("/usage/summary") && href.includes("window=today")) {
+        todaySummaryCalls += 1;
+        if (todaySummaryCalls === 1) {
+          return jsonResponse(
+            { error_code: "function_dial_timeout", error_message: "dial function timeout" },
+            500,
+          );
+        }
+      }
+      if (href.includes("/usage/summary")) return jsonResponse(TODAY_SUMMARY);
+      if (href.includes("/usage/by-model")) return jsonResponse(TODAY_BY_MODEL);
+      if (href.includes("/usage/by-provider")) return jsonResponse(TODAY_BY_PROVIDER);
+      return jsonResponse(MODELS);
+    });
+
+    const usage = await getUsageForProvider({ provider: "volceapi", apiKey: "sk-volce" });
+    expect(todaySummaryCalls).toBe(2);
+    expect(usage.message).toBeUndefined();
+    expect(usage.details.failedRequests).toBeUndefined();
+    expect(usage.quotas["Credits (today)"]).toMatchObject({ used: 11.74, remainingPercentage: 92 });
+    expect(usage.note).not.toMatch(/failed/i);
+  });
+
+  it("does not retry an auth failure", async () => {
+    proxyAwareFetch.mockResolvedValue(jsonResponse({ error: "unauthorized" }, 401));
+    const auth = await getUsageForProvider({ provider: "volceapi", apiKey: "bad" });
+    expect(auth.message).toMatch(/auth|key/i);
+    // 10 requests, one attempt each — 401 is a verdict, not a blip.
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(10);
+    expect(auth.transient).toBeUndefined();
+  });
+
+  it("reports the upstream error and marks it transient when nothing usable comes back", async () => {
+    proxyAwareFetch.mockImplementation(async () => jsonResponse(
+      { error_code: "function_dial_timeout", error_message: "dial function timeout" },
+      500,
+    ));
+    const usage = await getUsageForProvider({ provider: "volceapi", apiKey: "sk-volce" });
+    expect(usage.transient).toBe(true);
+    expect(usage.message).toMatch(/function_dial_timeout/);
+    expect(usage.quotas).toBeUndefined();
+    expect(usage.details.failedRequests).toHaveLength(10);
+    // 10 requests x 3 attempts.
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(30);
+    expect(proxyAwareFetch.mock.calls[0][1].signal).toBeDefined();
+  });
+
+  it("keeps the shared in-flight ceiling across concurrent refreshes", async () => {
+    let active = 0;
+    let peak = 0;
+    proxyAwareFetch.mockImplementation(async (url) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      const href = String(url);
+      if (href.includes("/usage/summary")) return jsonResponse(TODAY_SUMMARY);
+      if (href.includes("/usage/by-model")) return jsonResponse(TODAY_BY_MODEL);
+      if (href.includes("/usage/by-provider")) return jsonResponse(TODAY_BY_PROVIDER);
+      return jsonResponse(MODELS);
+    });
+
+    await Promise.all([
+      getUsageForProvider({ provider: "volceapi", apiKey: "sk-a" }),
+      getUsageForProvider({ provider: "volceapi", apiKey: "sk-b" }),
+      getUsageForProvider({ provider: "volceapi", apiKey: "sk-c" }),
+    ]);
+    expect(peak).toBeLessThanOrEqual(12);
+    expect(peak).toBeGreaterThan(1);
+  });
 });
 
 describe("parseQuotaData(volceapi)", () => {
@@ -270,6 +346,54 @@ describe("parseQuotaData(volceapi)", () => {
     expect(filterQuotasForCard("volceapi", rows).map((row) => row.name)).toEqual(["Credits (today)"]);
     expect(isDepletedQuotaRow(rows[0])).toBe(false);
     expect(isDepletedQuotaRow({ used: 99, total: 100 })).toBe(true);
+  });
+});
+
+describe("mergeTransientQuotaRows", () => {
+  const previousRows = [
+    { name: "Credits (today)", used: 1 },
+    { name: "Credits (week)", used: 2 },
+    { name: "Credits (month)", used: 3 },
+  ];
+
+  it("keeps the previous row for a window a transient failure dropped", () => {
+    const { rows, staleWindows } = mergeTransientQuotaRows({
+      previousRows,
+      incomingRows: [{ name: "Credits (today)", used: 9 }],
+      transient: true,
+    });
+    expect(rows.map((row) => row.name)).toEqual([
+      "Credits (today)", "Credits (week)", "Credits (month)",
+    ]);
+    // The fresh value wins; only the dropped windows are the old snapshot.
+    expect(rows[0].used).toBe(9);
+    expect(rows[1].used).toBe(2);
+    expect(staleWindows).toEqual(["Credits (week)", "Credits (month)"]);
+  });
+
+  it("does nothing without the transient marker or with no gap", () => {
+    expect(mergeTransientQuotaRows({
+      previousRows,
+      incomingRows: [{ name: "Credits (today)", used: 9 }],
+      transient: false,
+    })).toEqual({ rows: [{ name: "Credits (today)", used: 9 }], staleWindows: [] });
+
+    const complete = mergeTransientQuotaRows({
+      previousRows,
+      incomingRows: previousRows.map((row) => ({ ...row, used: row.used + 10 })),
+      transient: true,
+    });
+    expect(complete.staleWindows).toEqual([]);
+    expect(complete.rows[0].used).toBe(11);
+  });
+
+  it("appends windows that only the new answer carries", () => {
+    const { rows } = mergeTransientQuotaRows({
+      previousRows: [{ name: "Credits (today)", used: 1 }],
+      incomingRows: [{ name: "Credits (today)", used: 2 }, { name: "Tokens (today)", used: 30 }],
+      transient: true,
+    });
+    expect(rows.map((row) => row.name)).toEqual(["Credits (today)", "Tokens (today)"]);
   });
 });
 

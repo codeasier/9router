@@ -380,7 +380,7 @@ export default function ConnectionQuotaCard({
             </span>
             <p className="mt-1.5 text-xs text-text-muted">{error}</p>
           </div>
-        ) : quota?.message ? (
+        ) : quota?.message && visibleQuotas.length === 0 ? (
           <div className="text-center py-5">
             <p className="text-xs text-text-muted">{quota.message}</p>
           </div>
@@ -405,6 +405,14 @@ export default function ConnectionQuotaCard({
         {quota?.message && !error && !isLoading && (
           <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
             {quota.message}
+          </p>
+        )}
+        {quota?.stale && !error && !isLoading && (
+          <p className="px-1 text-[10px] leading-relaxed text-amber-600 dark:text-amber-400">
+            Last known values
+            {quota.staleAt ? ` from ${new Date(quota.staleAt).toLocaleTimeString()}` : ""}
+            {quota.staleWindows?.length ? ` for ${quota.staleWindows.join(", ")}` : ""} —
+            the upstream refresh failed.
           </p>
         )}
         {quota?.raw?.note && !quota?.message && !error && !isLoading && (

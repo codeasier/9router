@@ -22,27 +22,120 @@ import {
 
 const API_ROOT = U("volceapi").url || VOLCEAPI_API_ROOT;
 
+// A quota refresh asks this gateway for 10 endpoints per account, and the
+// dashboard fires every account at once. The gateway answers a burst with
+// `500 function_dial_timeout` on an arbitrary subset, so one failed request
+// used to blank a whole day/week/month window. Serialize per-request work,
+// retry transient answers and let a timeout fail fast instead of hanging.
+const REQUEST_TIMEOUT_MS = 5000;
+const REQUEST_MAX_ATTEMPTS = 3;
+const REQUEST_BUDGET_MS = 12000;
+const RETRY_BASE_DELAY_MS = 300;
+const MAX_IN_FLIGHT = 12;
+const RETRYABLE_STATUSES = new Set([408, 425, 429]);
+
 function jsonResponse(response) {
   return response.json().catch(() => null);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchJson(url, apiKey, proxyOptions) {
-  const response = await proxyAwareFetch(
-    url,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
+  try {
+    const response = await proxyAwareFetch(
+      url,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json",
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
-    },
-    proxyOptions,
-  );
-  return {
-    ok: response.ok,
-    status: response.status,
-    data: await jsonResponse(response),
-  };
+      proxyOptions,
+    );
+    return {
+      ok: response.ok,
+      status: response.status,
+      data: await jsonResponse(response),
+    };
+  } catch (error) {
+    // status 0 marks a transport failure (timeout, reset, proxy) rather than
+    // an upstream answer — retryable, and never an auth verdict.
+    return { ok: false, status: 0, data: null, error: error?.message || String(error) };
+  }
+}
+
+export function isRetryableVolceapiFailure(result) {
+  if (!result || result.status === 0) return true;
+  if (RETRYABLE_STATUSES.has(result.status)) return true;
+  return result.status >= 500 && result.status <= 599;
+}
+
+async function fetchJsonWithRetry(url, apiKey, proxyOptions) {
+  const startedAt = Date.now();
+  let result = null;
+  for (let attempt = 1; attempt <= REQUEST_MAX_ATTEMPTS; attempt += 1) {
+    // The slot covers the request only — a retry backoff must not hold a
+    // concurrency slot idle while other endpoints wait.
+    result = await withSlot(() => fetchJson(url, apiKey, proxyOptions));
+    if (result.ok || !isRetryableVolceapiFailure(result) || attempt === REQUEST_MAX_ATTEMPTS) break;
+    // Full jitter keeps the retries of one refresh from landing together.
+    const delay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1) + Math.random() * RETRY_BASE_DELAY_MS;
+    // Never let retries stretch one endpoint past the budget: a slow upstream
+    // would otherwise hold the whole card hostage.
+    if (Date.now() - startedAt + delay > REQUEST_BUDGET_MS) break;
+    await sleep(delay);
+  }
+  return result;
+}
+
+/**
+ * Shared in-flight ceiling for every usage request in this process, so that
+ * refreshing seven accounts does not become a 70-request burst against a
+ * gateway that answers bursts with `function_dial_timeout`.
+ */
+let inFlight = 0;
+const pending = [];
+
+async function withSlot(task) {
+  if (inFlight >= MAX_IN_FLIGHT) {
+    // A finishing task hands its slot straight to this waiter, so the count
+    // never dips and lets a fresh caller overshoot the ceiling.
+    await new Promise((resolve) => pending.push(resolve));
+  } else {
+    inFlight += 1;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = pending.shift();
+    if (next) next();
+    else inFlight -= 1;
+  }
+}
+
+function describeVolceapiFailure(result) {
+  if (!result) return "no response";
+  if (result.error) return result.error;
+  const code = result.data?.error_code;
+  const message = result.data?.error_message;
+  const detail = [code, message].filter(Boolean).join(" ");
+  return detail ? `${result.status} ${detail}` : `HTTP ${result.status}`;
+}
+
+function summarizeVolceapiFailures(failed) {
+  const tally = new Map();
+  for (const item of failed) {
+    const label = describeVolceapiFailure(item.result);
+    tally.set(label, (tally.get(label) || 0) + 1);
+  }
+  return [...tally.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, count]) => (count > 1 ? `${label} x${count}` : label))
+    .join("; ");
 }
 
 function usageUrl(path, query = {}) {
@@ -160,8 +253,11 @@ export async function getVolceapiUsage(apiKey = null, proxyOptions = null, provi
     }
     requests.push({ key: "models", url: usageUrl("/models") });
 
-    const settled = await Promise.all(requests.map((req) => fetchJson(req.url, key, proxyOptions)));
+    const settled = await Promise.all(
+      requests.map((req) => fetchJsonWithRetry(req.url, key, proxyOptions)),
+    );
     const byKey = {};
+    const failed = [];
     let sawAuthError = false;
     let sawOk = false;
     requests.forEach((req, index) => {
@@ -169,7 +265,9 @@ export async function getVolceapiUsage(apiKey = null, proxyOptions = null, provi
       byKey[req.key] = result;
       if (result.status === 401 || result.status === 403) sawAuthError = true;
       if (result.ok) sawOk = true;
+      if (!result.ok) failed.push({ request: req.key, result });
     });
+    const failureSummary = summarizeVolceapiFailures(failed);
 
     if (sawAuthError && !sawOk) {
       return {
@@ -192,6 +290,14 @@ export async function getVolceapiUsage(apiKey = null, proxyOptions = null, provi
       estimateComplete: true,
       incompleteReasons: [],
     };
+    if (failed.length) {
+      details.failedRequests = failed.map(({ request, result }) => ({
+        request,
+        status: result.status,
+        errorCode: result.data?.error_code ?? null,
+        error: result.error ?? null,
+      }));
+    }
     const quotas = {};
 
     for (const window of VOLCEAPI_WINDOWS) {
@@ -253,21 +359,32 @@ export async function getVolceapiUsage(apiKey = null, proxyOptions = null, provi
     if (Object.keys(quotas).length === 0) {
       return {
         plan: "火山网关",
-        message: "火山网关 usage API did not return usable day/week/month data.",
+        message: `火山网关 usage API did not return usable day/week/month data${failureSummary ? ` (${failureSummary})` : ""}.`,
+        // Transient means "try again later", which lets the dashboard keep the
+        // last good snapshot instead of blanking the card.
+        transient: failed.length > 0,
+        details,
       };
     }
 
     const incompleteWindows = VOLCEAPI_WINDOWS.filter((window) => details.windows[window] && !details.windows[window].creditComplete);
-    const note = details.estimateComplete
+    const baseNote = details.estimateComplete
       ? "Credits vs local caps (day 150 / week 450 / month 1000 by default). Token usage is in details — not a quota."
       : incompleteWindows.length
         ? `Credit estimate incomplete for ${incompleteWindows.join(", ")} — remaining is hidden for those windows until daily tokens and date-effective coefficients are available.`
         : "Credit estimate incomplete — remaining is hidden until daily tokens and date-effective coefficients are available.";
+    // Say what actually broke: a bare "incomplete" hides gateway timeouts.
+    const note = failureSummary
+      ? `${baseNote} Upstream failed ${failed.length}/${requests.length} requests after ${REQUEST_MAX_ATTEMPTS} attempts: ${failureSummary}.`
+      : baseNote;
 
     return {
       plan: "火山网关",
       quotas,
       note,
+      // Signals the dashboard that holes in this payload are upstream blips,
+      // not real zero usage — it keeps the last known rows for those windows.
+      transient: failed.length > 0,
       details,
     };
   } catch (error) {
