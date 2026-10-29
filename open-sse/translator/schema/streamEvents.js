@@ -8,9 +8,13 @@ export const CLAUDE_EVENT = {
 };
 
 // Anthropic content_block_delta delta types.
+// THINKING is not client payload: it is the extended-thinking stream, which says the turn is
+// producing tokens without (yet) producing an answer. The empty-content peek uses it to tell
+// "still thinking" apart from "returned 200 and nothing at all".
 export const CLAUDE_DELTA = {
   TEXT: "text_delta",
   INPUT_JSON: "input_json_delta",
+  THINKING: "thinking_delta",
 };
 
 // OpenAI Responses API SSE events (client format of /v1/responses).
