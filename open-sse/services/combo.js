@@ -467,6 +467,11 @@ export async function handleComboChat({
   let earliestRetryAfter = null;
   let lastStatus = null;
   let requestScopedResult = null;
+  // The peek only exists to fail over to ANOTHER member. With a single-candidate combo there is
+  // nowhere to fall through to, so it would buy nothing and cost a full round-trip of buffering
+  // before the first byte reaches the client. Skip it — a one-model combo streams like a plain
+  // model call.
+  const canFailOver = rotatedModels.length > 1;
 
   for (let i = 0; i < rotatedModels.length; i++) {
     const modelStr = rotatedModels[i];
@@ -482,7 +487,7 @@ export async function handleComboChat({
       if (result.ok) {
         let peeked = null;
         try {
-          peeked = await peekComboResponse(result, log);
+          if (canFailOver) peeked = await peekComboResponse(result, log);
         } catch (peekErr) {
           // peekStreamForContent is written not to throw; if reconstruction/Response
           // construction ever does, result.body is already locked by getReader() and can no
@@ -496,8 +501,9 @@ export async function handleComboChat({
         }
 
         if (!peeked) {
-          // Non-streaming (or non-SSE) response — not this peek's job. The zero-content
-          // JSON check still applies on a non-final seat.
+          // Not a peeked SSE body: non-streaming / non-SSE here, or a single-candidate combo
+          // where there is no member to fail over to (see canFailOver). The zero-content JSON
+          // check still applies on a non-final seat.
           const isLastModel = i === rotatedModels.length - 1;
           if (!isLastModel) {
             const contentType = result.headers?.get?.("content-type") || "";
@@ -523,8 +529,15 @@ export async function handleComboChat({
           return result;
         }
 
-        if (peeked.outcome === "content") {
-          log.info("COMBO", `Model ${modelStr} succeeded${peeked.timedOut ? " (peek deadline; committed)" : ""}`);
+        // "content" = answer text (or a tool call) already arrived; "live" = the turn is emitting
+        // tokens (reasoning/thinking) but has not reached answer text yet. Both commit: holding a
+        // thinking model's stream until its first answer character freezes the client for as long
+        // as the model thinks, and then delivers everything in one burst.
+        if (peeked.outcome === "content" || peeked.outcome === "live") {
+          const why = peeked.outcome === "live"
+            ? " (stream live; committed)"
+            : peeked.timedOut ? " (peek deadline; committed)" : "";
+          log.info("COMBO", `Model ${modelStr} succeeded${why}`);
           return peeked.response;
         }
 

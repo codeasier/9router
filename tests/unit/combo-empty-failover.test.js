@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   deltaHasClientContent,
+  deltaHasProgress,
   inspectSSELine,
   scanSSEBuffer,
   isNoRetryFinish,
@@ -20,6 +21,17 @@ vi.mock("@/lib/usageDb.js", () => ({
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+
+async function drainStream(stream) {
+  const rd = stream.getReader();
+  let out = "";
+  while (true) {
+    const { done, value } = await rd.read();
+    if (done) break;
+    out += dec.decode(value);
+  }
+  return out;
+}
 
 // Build a ReadableStream of encoded SSE frames. `delays[i]` (ms) optionally staggers frame i.
 function sseStream(frames, delays = []) {
@@ -52,11 +64,29 @@ describe("deltaHasClientContent", () => {
   it("null/garbage is NOT content", () => { expect(deltaHasClientContent(null)).toBe(false); expect(deltaHasClientContent("x")).toBe(false); });
 });
 
+describe("deltaHasProgress", () => {
+  it("reasoning_content IS progress (but not content)", () => {
+    expect(deltaHasProgress({ reasoning_content: "x" })).toBe(true);
+    expect(deltaHasClientContent({ reasoning_content: "x" })).toBe(false);
+  });
+  it("the `reasoning` spelling some providers use is progress", () => expect(deltaHasProgress({ reasoning: "x" })).toBe(true));
+  it("content is progress", () => expect(deltaHasProgress({ content: "hi" })).toBe(true));
+  it("role-only and empty deltas are NOT progress", () => {
+    expect(deltaHasProgress({ role: "assistant" })).toBe(false);
+    expect(deltaHasProgress({ content: "", reasoning_content: "" })).toBe(false);
+    expect(deltaHasProgress(null)).toBe(false);
+  });
+});
+
 describe("inspectSSELine", () => {
-  it("[DONE] carries nothing", () => expect(inspectSSELine("data: [DONE]")).toMatchObject({ content: false, finishReason: null }));
-  it("role frame: no content, no finish", () => {
+  it("[DONE] carries nothing", () => expect(inspectSSELine("data: [DONE]")).toMatchObject({ content: false, progress: false, finishReason: null }));
+  it("role frame: no content, no progress, no finish", () => {
     const r = inspectSSELine(ROLE.trim());
-    expect(r.content).toBe(false); expect(r.finishReason).toBe(null);
+    expect(r.content).toBe(false); expect(r.progress).toBe(false); expect(r.finishReason).toBe(null);
+  });
+  it("reasoning frame: progress but no content", () => {
+    const r = inspectSSELine(REASONING.trim());
+    expect(r.content).toBe(false); expect(r.progress).toBe(true);
   });
   it("empty stop frame: no content, finish stop", () => {
     const r = inspectSSELine(EMPTY_STOP.trim());
@@ -99,8 +129,22 @@ describe("peekStreamForContent", () => {
     expect(p.outcome).toBe("content");
   });
 
-  it("reasoning-only then abort → still empty (reasoning is not content)", async () => {
+  // Regression for the frozen-screen report: a reasoning model emits thinking for tens of
+  // seconds before its first answer character. Waiting for content buffered the whole turn, so the
+  // client saw nothing and then the entire response landed in one burst. Reasoning is proof the
+  // turn is alive; the head must be released the moment it appears.
+  it("reasoning-first stream is released at once as `live` — the thinking phase is not buffered", async () => {
     const p = await peekStreamForContent(sseStream([ROLE, REASONING, EMPTY_STOP, DONE]));
+    expect(p.outcome).toBe("live");
+    expect(p.timedOut).toBe(false);
+    expect(p.head).toHaveLength(2); // role + reasoning only — nothing past the live frame is held
+    // The replay is still byte-faithful end to end: head first, then what stayed on the reader.
+    expect(await drainStream(reconstructStream(p.head, p.reader)))
+      .toBe([ROLE, REASONING, EMPTY_STOP, DONE].join(""));
+  });
+
+  it("a stream that released nothing at all is still `empty` (the case this feature exists for)", async () => {
+    const p = await peekStreamForContent(sseStream([ROLE, EMPTY_STOP, DONE]));
     expect(p.outcome).toBe("empty");
   });
 
@@ -285,14 +329,14 @@ describe("combo fall-through per client format (real combo.js + streaming pipeli
   await initTranslators();
 
   const LOG = { line: vi.fn(), errorLine: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const memberResponse = async (frames, sourceFormat, targetFormat, model) => {
+  const memberResponse = async (frames, sourceFormat, targetFormat, model, delays = []) => {
     const body = { model, stream: true, messages: [{ role: "user", content: "hi" }] };
     const { onStreamComplete, streamDetailId } = buildOnStreamComplete({
       provider: "openai", model, connectionId: "conn", apiKey: "sk-x", requestStartTime: Date.now(), body, stream: true,
       clientRawRequest: { endpoint: "/v1/chat/completions" }, reqTag: "t", log: LOG,
     });
     const res = await handleStreamingResponse({
-      providerResponse: new Response(sseStream(frames), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+      providerResponse: new Response(sseStream(frames, delays), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
       provider: "openai", model, sourceFormat, targetFormat, body, stream: true, requestStartTime: Date.now(),
       connectionId: "conn", apiKey: "sk-x", streamController: createStreamController({ log: LOG, provider: "openai", model }),
       onStreamComplete, streamDetailId, reqTag: "t", log: LOG,
@@ -344,10 +388,14 @@ describe("combo fall-through per client format (real combo.js + streaming pipeli
         const { tried } = await combo([[ROLE, TOOL, DONE], [ROLE, C("from-m1"), STOP, DONE]], fmt);
         expect(tried).toEqual(["openai/m0"]);
       });
-      it("reasoning-only first member falls through", async () => {
+      // Trade-off made deliberately: a thinking model is committed on its first reasoning frame.
+      // Waiting for answer text froze the client for the whole thinking phase, which is far more
+      // costly than a rare reasoning-only dead end (which still reaches the client as text-less
+      // reasoning instead of a silent failover).
+      it("reasoning-only first member is committed on its first frame — no failover, no frozen screen", async () => {
         const { out, tried } = await combo([[ROLE, REASONING, STOP, DONE], [ROLE, C("from-m1"), STOP, DONE]], fmt);
-        expect(tried).toEqual(["openai/m0", "openai/m1"]);
-        expect(out).toContain("from-m1");
+        expect(tried).toEqual(["openai/m0"]);
+        expect(out).not.toContain("from-m1");
       });
     });
   }
@@ -356,6 +404,27 @@ describe("combo fall-through per client format (real combo.js + streaming pipeli
       const { tried } = await combo([[ROLE, FILTER_STOP, DONE], [ROLE, C("from-m1"), STOP, DONE]], { sourceFormat });
       expect(tried).toEqual(["openai/m0"]);
     }
+  });
+
+  // Regression for the second half of the frozen-screen report: single-candidate combos have no
+  // member to fall through to, so peeking only delays the first byte. The member's first frame
+  // must reach the client untouched (if the peek ran, the role frame would arrive bundled with
+  // the slower reasoning frame behind it).
+  it("single-model combo skips the peek — the member's first frame goes out immediately", async () => {
+    const frames = [ROLE, REASONING, C("from-m0"), STOP, DONE];
+    const res = await handleComboChat({
+      body: { messages: [{ role: "user", content: "hi" }] },
+      models: ["openai/m0"],
+      handleSingleModel: async (_b, m) => memberResponse(frames, FORMATS.OPENAI, FORMATS.OPENAI, m, [0, 150, 150, 0, 0]),
+      log: LOG, comboName: `c-${Math.random()}`, comboStrategy: "fallback",
+    });
+    const rd = res.body.getReader();
+    const first = dec.decode((await rd.read()).value);
+    await rd.cancel();
+    // The pipeline restamps frame ids, so assert structurally: the role frame left on its own,
+    // before the reasoning frame that is 150 ms behind it (a peek would have bundled them).
+    expect(first).toContain('"role":"assistant"');
+    expect(first).not.toContain("thinking...");
   });
 
   // Responses provider + Responses client: same-format passthrough of Responses events.
@@ -384,9 +453,11 @@ describe("combo fall-through per client format (real combo.js + streaming pipeli
       expect(out).toContain("from-m1");
       expect(out).not.toContain("response.failed");
     });
-    it("a function_call item counts as content; reasoning-only does not", async () => {
+    it("a function_call item counts as content; a reasoning delta commits the member", async () => {
       expect((await combo([[CREATED, FC, COMPLETED], [CREATED, TEXT("from-m1"), COMPLETED]], RESP)).tried).toEqual(["openai/m0"]);
-      expect((await combo([[CREATED, REASON, COMPLETED], [CREATED, TEXT("from-m1"), COMPLETED]], RESP)).tried).toEqual(["openai/m0", "openai/m1"]);
+      const reasoningFirst = await combo([[CREATED, REASON, COMPLETED], [CREATED, TEXT("from-m1"), COMPLETED]], RESP);
+      expect(reasoningFirst.tried).toEqual(["openai/m0"]);
+      expect(reasoningFirst.out).not.toContain("from-m1");
     });
     it("response.incomplete (content_filter) is NOT retried", async () => {
       const { out, tried } = await combo([[CREATED, FILTERED], [CREATED, TEXT("from-m1"), COMPLETED]], RESP);
