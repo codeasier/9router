@@ -54,6 +54,8 @@ export default {
   },
   models: [
     { id: "gpt-6.1-sol", name: "GPT 6.1 Sol", responsesLite: true, thinkingLevels: GPT_6_LITE_THINKING_LEVELS },
+    // Opt-in ordinary Responses transport; the original id retains Codex Lite compatibility.
+    { id: "gpt-6.1-sol-parallel", name: "GPT 6.1 Sol (parallel tools)", upstreamModelId: "gpt-6.1-sol", responsesLite: false, thinkingLevels: GPT_6_LITE_THINKING_LEVELS },
     { id: "gpt-6-astra", name: "GPT 6.0 Astra" },
     { id: "gpt-6-astra[1m]", name: "GPT 6.0 Astra (extended context)", upstreamModelId: "gpt-6-astra" },
     { id: "gpt-6-sol", name: "GPT 6.0 Sol", responsesLite: true, thinkingLevels: GPT_6_LITE_THINKING_LEVELS },
