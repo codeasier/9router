@@ -468,6 +468,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     result.max_output_tokens = body.max_tokens;
   }
   if (body.top_p !== undefined) result.top_p = body.top_p;
+  if (body.parallel_tool_calls !== undefined) result.parallel_tool_calls = body.parallel_tool_calls;
   if (body.reasoning !== undefined) result.reasoning = body.reasoning;
   if (body.reasoning_effort !== undefined) result.reasoning = { effort: body.reasoning_effort, summary: "auto" };
   if (body.service_tier !== undefined) result.service_tier = body.service_tier;
