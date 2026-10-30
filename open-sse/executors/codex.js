@@ -8,7 +8,7 @@ import {
 import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
 import { RESPONSES_ITEM } from "../translator/schema/index.js";
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
-import { getModelUpstreamId, getProviderModels } from "../config/providerModels.js";
+import { getModelUpstreamId, getModelMeta } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import { DEFAULT_RETRY_CONFIG, HTTP_STATUS, resolveRetryEntry } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
@@ -35,8 +35,18 @@ const CODEX_SSE_USER_OUTPUT_PATTERNS = [
 const CODEX_SSE_PEEK_BYTES = 256 * 1024;
 const CODEX_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
 function isCodexResponsesLiteModel(model) {
-  const baseId = String(model || "").replace(/\([^()]+\)\s*$/, "");
-  return getProviderModels("cx").some((entry) => entry.id === baseId && entry.responsesLite === true);
+  const entry = getModelMeta("cx", model);
+  // An alias can explicitly opt out even when its upstream model defaults to Lite.
+  return (entry?.responsesLite ?? getModelMeta("cx", getModelUpstreamId("cx", model))?.responsesLite) === true;
+}
+
+// Shared by body and header generation; never infer transport from the rewritten
+// body.model alone, since chatCore has already resolved aliases to upstream ids.
+function usesCodexResponsesLite(model, body) {
+  const hasSearch = tools => tools?.some?.(tool => tool?.type === "web_search");
+  return isCodexResponsesLiteModel(model)
+    && !hasSearch(body?.tools)
+    && !body?.input?.some?.(item => item?.type === "additional_tools" && hasSearch(item.tools));
 }
 
 // Server-generated item id prefixes that Codex /responses cannot resolve when store=false
@@ -228,7 +238,7 @@ export class CodexExecutor extends BaseExecutor {
    */
   buildHeaders(credentials, stream = true, _url = null, model = null, body = null) {
     const headers = super.buildHeaders(credentials, stream);
-    if (isCodexResponsesLiteModel(model && getModelUpstreamId("cx", model)) && !body?.tools?.some?.(tool => tool?.type === "web_search")) {
+    if (usesCodexResponsesLite(model || body?.model, body)) {
       headers["x-openai-internal-codex-responses-lite"] = "true";
     }
     headers["session_id"] = this._currentSessionId || credentials?.connectionId || "default";
@@ -457,12 +467,12 @@ export class CodexExecutor extends BaseExecutor {
     if (autoWebSearch && !body.tools?.some?.(tool => tool?.type === "web_search")) {
       body.tools = [...(Array.isArray(body.tools) ? body.tools : []), { type: "web_search" }];
     }
-    // Hosted search cannot run from a Lite input prefix. When switching to
-    // regular Responses, move all prefixed tools without duplicating definitions.
+    const responsesLite = usesCodexResponsesLite(model || body.model, body);
+    // Hosted search or an explicit alias can select regular Responses. Move any
+    // native Lite tool prefix to the top level without duplicating definitions.
     let convertedLitePrefix = false;
-    if (isCodexResponsesLiteModel(upstreamModel) && Array.isArray(body.input)
-      && (body.tools?.some?.(tool => tool?.type === "web_search")
-        || body.input.some(item => item?.type === "additional_tools" && item.tools?.some?.(tool => tool?.type === "web_search")))) {
+    if (!responsesLite && Array.isArray(body.input)
+      && body.input.some(item => item?.type === "additional_tools")) {
       const tools = Array.isArray(body.tools) ? [...body.tools] : [];
       const seen = new Set(tools.map(tool => `${tool?.type}:${tool?.name || tool?.function?.name || ""}`));
       for (const item of body.input) {
@@ -476,8 +486,6 @@ export class CodexExecutor extends BaseExecutor {
       convertedLitePrefix = body.input.some(item => item?.type === "additional_tools");
       body.input = body.input.filter(item => item?.type !== "additional_tools");
     }
-    const responsesLite = isCodexResponsesLiteModel(upstreamModel)
-      && !body.tools?.some?.(tool => tool?.type === "web_search");
 
     // Ensure input is present and non-empty (Codex API rejects empty input)
     if (!body.input || (Array.isArray(body.input) && body.input.length === 0)) {
@@ -528,8 +536,6 @@ export class CodexExecutor extends BaseExecutor {
       body.tools = null;
       body.tool_choice ||= "auto";
       body.parallel_tool_calls = false;
-    } else {
-      delete body.parallel_tool_calls;
     }
 
     // Extract thinking level from model name suffix
@@ -554,6 +560,7 @@ export class CodexExecutor extends BaseExecutor {
       if (!responsesLite && !body.reasoning.summary) body.reasoning.summary = "auto";
     }
     if (responsesLite) body.reasoning.context = "all_turns";
+    else delete body.reasoning.context;
     delete body.reasoning_effort;
 
     // Include reasoning encrypted content (required by Codex backend for reasoning models)
