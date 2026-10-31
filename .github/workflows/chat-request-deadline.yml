@@ -23,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      DATA_DIR: ${{ runner.temp }}/9router-deadline-data
       NEXT_TELEMETRY_DISABLED: "1"
       ENABLE_REQUEST_LOGS: "false"
       RUN_REAL: "0"
@@ -36,6 +35,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      - name: Isolate runtime data
+        run: echo "DATA_DIR=$RUNNER_TEMP/9router-deadline-data" >> "$GITHUB_ENV"
       # This repository does not commit a root lockfile; install both independent packages.
       - name: Install gateway and test dependencies
         run: |
