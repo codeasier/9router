@@ -1,3 +1,4 @@
+import { isRequestAbortError } from "../utils/requestDeadline.js";
 import { PROVIDERS } from "../config/providers.js";
 import { OAUTH_ENDPOINTS, REFRESH_LEAD_MS } from "../config/appConstants.js";
 import {
@@ -263,18 +264,22 @@ export async function getAllAccessTokens(userInfo, log) {
   return results;
 }
 
-export async function refreshWithRetry(refreshFn, maxRetries = 3, log = null) {
+export async function refreshWithRetry(refreshFn, maxRetries = 3, log = null, { requestDeadline } = {}) {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    requestDeadline?.throwIfAborted();
     if (attempt > 0) {
       const delay = attempt * 1000;
       log?.debug?.("TOKEN_REFRESH", `Retry ${attempt}/${maxRetries} after ${delay}ms`);
-      await new Promise(r => setTimeout(r, delay));
+      if (requestDeadline) await requestDeadline.sleep(delay);
+      else await new Promise(r => setTimeout(r, delay));
     }
 
     try {
-      const result = await refreshFn();
+      const result = requestDeadline ? await requestDeadline.run(refreshFn) : await refreshFn();
       if (result) return result;
     } catch (error) {
+      requestDeadline?.throwIfAborted();
+      if (isRequestAbortError(error)) throw error;
       log?.warn?.("TOKEN_REFRESH", `Attempt ${attempt + 1}/${maxRetries} failed: ${error.message}`);
     }
   }

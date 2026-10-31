@@ -10,6 +10,10 @@ import {
 } from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
 import { ensureClaudeCliVersion, applyClaudeCliVersion } from "./claudeCliVersion.js";
+import {
+  cancelResponseBody, createRequestAbortError, isRequestAbortError,
+  isUpstreamHeadersTimeout, runWithSignal,
+} from "./requestDeadline.js";
 
 const CLAUDE_UA_PROBE = /claude-cli\/\d/;
 function hasClaudeCliHeader(headers) {
@@ -42,6 +46,16 @@ let undiciFetch = null;
 async function rawFetch(url, options) {
   undiciFetch ??= (await import("undici")).fetch;
   return undiciFetch(url, options);
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason ?? new DOMException("Request aborted", "AbortError");
+}
+
+function throwIfTerminalTransportError(signal, error) {
+  throwIfAborted(signal);
+  if (isRequestAbortError(error)) throw error;
+  if (isUpstreamHeadersTimeout(error)) throw createRequestAbortError("UPSTREAM_HEADERS_TIMEOUT");
 }
 
 // ─── TLS fingerprinting via got-scraping (browser-like JA3) ───────────────
@@ -408,13 +422,16 @@ function isBodyReplaySafe(body) {
 }
 
 async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = false) {
+  throwIfAborted(options.signal);
   try {
     // Protocol adapters may need Node's HTTP/1 transport on the direct path.
     // Keep proxy/no-proxy resolution and strict-proxy enforcement here.
     if (!proxyUrl && options.directFetch) return await options.directFetch(url, options);
     const dispatcher = await getDispatcher(proxyUrl, false, forceFreshSocket);
+    throwIfAborted(options.signal);
     return await rawFetch(url, { ...options, dispatcher });
   } catch (err) {
+    throwIfTerminalTransportError(options.signal, err);
     const isStrictSsl = options.strictTls === true || process.env.STRICT_SSL === "true" || process.env.STRICT_SSL === "1";
     if (!isStrictSsl && isTlsCertError(err)) {
       if (!isBodyReplaySafe(options.body)) {
@@ -423,6 +440,7 @@ async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = f
       // ponytail: in-memory insecure agent fallback for self-signed MITM corporate/antivirus certs
       console.warn(`[ProxyFetch] TLS cert verification failed (${err.cause?.code || err.code}), retrying with insecure TLS: ${url}`);
       const insecureDispatcher = await getDispatcher(proxyUrl, true, forceFreshSocket);
+      throwIfAborted(options.signal);
       return await rawFetch(url, { ...options, dispatcher: insecureDispatcher });
     }
 
@@ -454,8 +472,21 @@ async function createBypassRequest(parsedUrl, realIP, options) {
   const https = httpsModule.default ?? httpsModule;
   const net = netModule.default ?? netModule;
 
+  throwIfAborted(options.signal);
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
+    let req;
+    const cleanup = () => options.signal?.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      const reason = options.signal?.reason ?? new DOMException("Request aborted", "AbortError");
+      req?.destroy(reason instanceof Error ? reason : undefined);
+      socket.destroy(reason instanceof Error ? reason : undefined);
+      cleanup();
+      reject(reason);
+    };
+    socket.on("error", error => { cleanup(); reject(error); });
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) { onAbort(); return; }
 
     socket.connect(HTTPS_PORT, realIP, () => {
       const reqOptions = {
@@ -475,7 +506,8 @@ async function createBypassRequest(parsedUrl, realIP, options) {
         },
       };
 
-      const req = https.request(reqOptions, (res) => {
+      req = https.request(reqOptions, (res) => {
+        res.once("close", cleanup);
         const response = {
           ok: res.statusCode >= HTTP_SUCCESS_MIN && res.statusCode < HTTP_SUCCESS_MAX,
           status: res.statusCode,
@@ -492,18 +524,21 @@ async function createBypassRequest(parsedUrl, realIP, options) {
         resolve(response);
       });
 
-      req.on("error", reject);
+      req.on("error", error => { cleanup(); reject(error); });
       if (options.body) {
         req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
       }
       req.end();
     });
-
-    socket.on("error", reject);
   });
 }
 
-export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
+export function proxyAwareFetch(url, options = {}, proxyOptions = null) {
+  return runWithSignal(options.signal, () => proxyAwareFetchImpl(url, options, proxyOptions), cancelResponseBody);
+}
+
+async function proxyAwareFetchImpl(url, options, proxyOptions) {
+  throwIfAborted(options.signal);
   // Keep the spoofed Claude Code version current (new models require a minimum CLI version).
   // Refresh in the background: the request uses the version already known, so an
   // unreachable npm registry can never add latency to the chat path.
@@ -544,6 +579,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       dbg("PROXY", `PROXY ROUTING VERIFIED | ${safeTargetHost(targetUrl)} | transport=adapter | proxy=${via || safeProxyHost(proxyUrl)} | status=${res?.status}`);
       return res;
     } catch (err) {
+      throwIfTerminalTransportError(options.signal, err);
       if (proxyOptions?.strictProxy === true) {
         throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${err.message}`);
       }
@@ -558,8 +594,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       try {
         return await fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket);
       } catch (proxyError) {
+        throwIfTerminalTransportError(options.signal, proxyError);
         if (proxyOptions?.strictProxy === true) {
-          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
         }
         console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
       }
@@ -568,8 +605,10 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     try {
       const parsedUrl = new URL(targetUrl);
       const realIP = await resolveRealIP(parsedUrl.hostname);
+      throwIfAborted(options.signal);
       if (realIP) return await createBypassRequest(parsedUrl, realIP, options);
     } catch (error) {
+      throwIfTerminalTransportError(options.signal, error);
       console.warn(`[ProxyFetch] MITM bypass failed: ${error.message}`);
     }
   }
@@ -578,9 +617,10 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     try {
       return await fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket);
     } catch (proxyError) {
+      throwIfTerminalTransportError(options.signal, proxyError);
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
       return fetchWithTlsFallback(url, options, null, forceFreshSocket);

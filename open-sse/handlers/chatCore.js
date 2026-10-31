@@ -5,6 +5,7 @@ import { applyThinking, extractThinking, stripThinkingSuffix } from "../translat
 import { FORMATS } from "../translator/formats.js";
 import { normalizeClaudePassthrough, anchorClaudeCache } from "../translator/formats/claude.js";
 import { createStreamController } from "../utils/streamHandler.js";
+import { createRequestDeadline, createRequestAbortError, isRequestAbortError, cancelResponseBody, finalizeResponseDeadline } from "../utils/requestDeadline.js";
 import { buildCredentialProxyOptions } from "../utils/proxyFetch.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { createRequestLogger } from "../utils/requestLogger.js";
@@ -17,6 +18,7 @@ import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
+import { readResponseBody } from "../utils/readResponseBody.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
@@ -63,7 +65,45 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, customPromptEnabled, customPrompt, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, providerOverrides, modelOverrides, allowCodexSseFallback = true }) {
+// The app owns one deadline across account/combo fallback. Standalone engine
+// callers get the same lifecycle, but only its owner may finish/dispose it.
+export async function handleChatCore(options) {
+  const requestDeadline = options.requestDeadline || createRequestDeadline({ signal: options.signal });
+  const ownsDeadline = !options.requestDeadline;
+  const state = { streamController: null, providerResponse: null, streaming: false, trackDone: () => {} };
+  try {
+    const result = await requestDeadline.run(() => handleChatCoreAttempt({ ...options, requestDeadline, requestState: state }), (late) => cancelResponseBody(late?.response));
+    requestDeadline.throwIfAborted();
+    if (!state.streaming) {
+      state.trackDone();
+      state.streamController?.handleComplete();
+    }
+    if (ownsDeadline) {
+      if (result?.response) result.response = finalizeResponseDeadline(result.response, requestDeadline);
+      else requestDeadline.dispose();
+    }
+    return result;
+  } catch (error) {
+    if (error?.name === "AbortError" && !isRequestAbortError(error)) error = createRequestAbortError("CLIENT_DISCONNECTED");
+    if (isRequestAbortError(error)) error = createRequestAbortError(error.code);
+    if (ownsDeadline && isRequestAbortError(error)) requestDeadline.abort(error);
+    state.streamController?.abort?.(error);
+    state.streamController?.handleComplete();
+    cancelResponseBody(state.providerResponse);
+    if (ownsDeadline) requestDeadline.dispose();
+    state.trackDone();
+    if (!isRequestAbortError(error)) throw error;
+    const { provider, model } = options.modelInfo;
+    const status = error.code === "CLIENT_DISCONNECTED" ? 499 : HTTP_STATUS.GATEWAY_TIMEOUT;
+    appendRequestLog({ model, provider, connectionId: options.connectionId, status: `FAILED ${status}` }).catch(() => {});
+    // Local cancellation is terminal, not an unhealthy provider/account. Keep
+    // the typed marker in-process; never echo the client's arbitrary reason.
+    return { ...createErrorResult(status, error.message), terminalRequestError: error };
+  }
+}
+
+async function handleChatCoreAttempt({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, customPromptEnabled, customPrompt, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, providerOverrides, modelOverrides, allowCodexSseFallback = true, requestDeadline, requestState }) {
+  requestDeadline.throwIfAborted();
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -160,7 +200,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     stream = false;
   }
 
-  const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);
+  const reqLogger = await requestDeadline.run(() => createRequestLogger(sourceFormat, targetFormat, model));
   if (clientRawRequest) reqLogger.logClientRawRequest(clientRawRequest.endpoint, clientRawRequest.body, clientRawRequest.headers);
   reqLogger.logRawRequest(body);
   log?.debug?.("FORMAT", `${sourceFormat} → ${targetFormat} | stream=${stream}`);
@@ -184,9 +224,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     // Convert remote image URLs to base64 for targets that can't fetch URLs.
     try {
-      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined });
+      const n = await requestDeadline.run(() => prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: requestDeadline.signal }));
       if (n > 0) log?.debug?.("MODALITY", `prefetched ${n} remote image(s) for ${targetFormat}`);
-    } catch (e) { log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`); }
+    } catch (e) {
+      requestDeadline.throwIfAborted();
+      if (isRequestAbortError(e)) throw e;
+      log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`);
+    }
   }
 
   let translatedBody;
@@ -218,11 +262,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   } else {
     // Only append the forced-thinking argument when an override is active, so the
     // call signature stays identical to upstream for the common path.
-    translatedBody = forcedThinking
+    translatedBody = await requestDeadline.run(() => forcedThinking
       ? translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool, forcedThinking)
-      : translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
+      : translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool));
     if (!translatedBody) {
-      trackPendingRequest(model, provider, connectionId, false, true);
       return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Failed to translate request for ${sourceFormat} → ${targetFormat}`);
     }
     toolNameMap = translatedBody._toolNameMap;
@@ -297,7 +340,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
   const headroomDiagnostics = {};
-  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, timeoutMs: headroomTimeoutMs, diagnostics: headroomDiagnostics });
+  const headroomStats = await requestDeadline.run(() => compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, timeoutMs: headroomTimeoutMs, diagnostics: headroomDiagnostics, signal: requestDeadline.signal }));
   const headroomLine = formatHeadroomLog(headroomStats);
   const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
   if (headroomLine) {
@@ -332,10 +375,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // PXPIPE: image bulky context (Claude-format bodies only), last saver before dispatch
   let pxpipeSummary = null;
   if (pxpipeEnabled) {
-    const pxpipeResult = await compressWithPxpipe(translatedBody, {
+    const pxpipeResult = await requestDeadline.run(() => compressWithPxpipe(translatedBody, {
       enabled: true, format: finalFormat, model: upstreamModel,
-      minChars: pxpipeMinChars, timeoutMs: pxpipeTimeoutMs, transform: pxpipeTransform,
-    });
+      minChars: pxpipeMinChars, timeoutMs: pxpipeTimeoutMs, transform: pxpipeTransform, signal: requestDeadline.signal,
+    }));
     pxpipeSummary = pxpipeResult.summary;
     if (pxpipeResult.body) translatedBody = pxpipeResult.body;
     if (pxpipeSummary?.applied) xf.push(`PXPIPE:${pxpipeSummary.imageCount}img`);
@@ -348,22 +391,32 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // system/tools/messages, and a stale anchor costs a full prefix rewrite.
   if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);
 
+  requestDeadline.throwIfAborted();
   const executor = getExecutor(provider);
   trackPendingRequest(model, provider, connectionId, true);
+  let pending = true;
+  const trackDone = (error = false) => {
+    if (!pending) return;
+    pending = false;
+    trackPendingRequest(model, provider, connectionId, false, error);
+  };
+  requestState.trackDone = trackDone;
   appendRequestLog({ model, provider, connectionId, status: "PENDING" }).catch(() => { });
 
   const msgCount = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || translatedBody.request?.contents?.length || 0;
   log?.debug?.("REQUEST", `${provider.toUpperCase()} | ${model} | ${msgCount} msgs`);
 
   const streamController = createStreamController({
+    signal: requestDeadline.signal,
     onDisconnect: (reason) => {
-      trackPendingRequest(model, provider, connectionId, false);
+      trackDone();
       if (onDisconnect) onDisconnect(reason);
     },
-    onError: () => trackPendingRequest(model, provider, connectionId, false),
+    onError: () => trackDone(),
     log, provider, model, reqTag
   });
 
+  requestState.streamController = streamController;
   const proxyOptions = buildCredentialProxyOptions(credentials);
 
   if (proxyOptions.vercelRelayUrl) {
@@ -398,7 +451,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // exception: it is decoded by the executor into OpenAI-compatible output.
   let providerResponseFormat = targetFormat;
   try {
-    const result = await executor.execute({
+    const result = await requestDeadline.run(() => executor.execute({
       model,
       body: translatedBody,
       stream,
@@ -406,12 +459,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       providerSessionId: sessionSeed,
       clientTool,
       signal: streamController.signal,
+      requestDeadline,
       log,
       proxyOptions,
       providerOverrides,
       allowCodexSseFallback: effectiveAllowCodexSseFallback,
-    });
-    providerResponse = result.response;
+    }), (late) => cancelResponseBody(late?.response));
+    providerResponse = requestState.providerResponse = result.response;
     providerUrl = result.url;
     providerHeaders = result.headers;
     finalBody = result.transformedBody;
@@ -422,23 +476,22 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
-    trackPendingRequest(model, provider, connectionId, false, true);
-    appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
+    requestDeadline.throwIfAborted();
+    if (isRequestAbortError(error)) throw error;
+    if (error?.name === "AbortError") throw createRequestAbortError("CLIENT_DISCONNECTED");
+    trackDone(true);
+    appendRequestLog({ model, provider, connectionId, status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: translatedBody || null,
-      response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
+      response: { error: error.message || String(error), status: HTTP_STATUS.BAD_GATEWAY, thinking: null },
       pxpipe: pxpipeSummary,
       status: "error"
     })).catch(() => { });
 
-    if (error.name === "AbortError") {
-      streamController.handleError(error);
-      return createErrorResult(499, "Request aborted");
-    }
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     if (log?.errorLine) {
       log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error.stack ? `\n    ${error.stack}` : ""}`);
@@ -449,26 +502,26 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Handle 401/403 - try token refresh (skip for noAuth providers)
   if (!executor.noAuth && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
     try {
-      // Mutate credentials after each successful refresh: rotating refresh_token
-      // providers (xAI/grok-cli) issue a new RT on every refresh; without this,
-      // refreshWithRetry's 2nd/3rd attempt reuses the already-consumed RT →
-      // invalid_grant → auth_failed retryable=false.
-      const newCredentials = await refreshWithRetry(async () => {
+      // An already-started OAuth refresh may rotate the refresh token even
+      // after its caller disconnects. Keep its persistence inside that operation,
+      // outside the request race, so cancellation cannot discard the new token.
+      // Executors retain their existing provider single-flight refresh behavior.
+      const newCredentials = await requestDeadline.run(() => refreshWithRetry(async () => {
         const result = await executor.refreshCredentials(credentials, log, proxyOptions);
-        if (result?.refreshToken && result.refreshToken !== credentials.refreshToken) {
-          if (result.accessToken) credentials.accessToken = result.accessToken;
-          credentials.refreshToken = result.refreshToken;
+        if (result?.accessToken || result?.copilotToken || result?.refreshToken) {
+          Object.assign(credentials, result);
+          if (onCredentialsRefreshed) {
+            try { await onCredentialsRefreshed(result); } catch (e) {
+              log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`);
+            }
+          }
         }
         return result;
-      }, 3, log);
+      }, 3, log, { requestDeadline }));
       if (newCredentials?.accessToken || newCredentials?.copilotToken) {
         if (log?.line) log.line(reqTag, "🔑", `TOKEN REFRESHED · ${provider}/${model}`);
-        Object.assign(credentials, newCredentials);
-        if (onCredentialsRefreshed) {
-          try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
-        }
         try {
-          const retryResult = await executor.execute({
+          const retryResult = await requestDeadline.run(() => executor.execute({
             model,
             body: translatedBody,
             stream,
@@ -476,29 +529,43 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
             providerSessionId: sessionSeed,
             clientTool,
             signal: streamController.signal,
+            requestDeadline,
             log,
             proxyOptions,
             providerOverrides,
             allowCodexSseFallback: effectiveAllowCodexSseFallback,
-          });
+          }), (late) => cancelResponseBody(late?.response));
           if (retryResult.response.ok) {
-            providerResponse = retryResult.response;
+            cancelResponseBody(providerResponse);
+            providerResponse = requestState.providerResponse = retryResult.response;
             providerUrl = retryResult.url;
             providerResponseFormat = retryResult.responseFormat || targetFormat;
+          } else {
+            cancelResponseBody(retryResult.response);
           }
-        } catch { log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`); }
+        } catch (e) {
+          requestDeadline.throwIfAborted();
+          if (isRequestAbortError(e)) throw e;
+          if (e?.name === "AbortError") throw createRequestAbortError("CLIENT_DISCONNECTED");
+          log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
+        }
       } else {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh failed`);
       }
     } catch (e) {
+      requestDeadline.throwIfAborted();
+      if (isRequestAbortError(e)) throw e;
       log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh threw: ${e.message}`);
     }
   }
 
+  requestDeadline.throwIfAborted();
   // Provider returned error
   if (!providerResponse.ok) {
-    trackPendingRequest(model, provider, connectionId, false, true);
-    const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
+    const errorText = await readResponseBody(providerResponse, requestDeadline);
+    const errorResponse = new Response(errorText, { status: providerResponse.status, headers: providerResponse.headers });
+    const { statusCode, message, resetsAtMs } = await requestDeadline.run(() => parseUpstreamError(errorResponse, executor));
+    trackDone(true);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -520,29 +587,33 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs, upstreamResponseHeaders(providerResponse.headers));
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, requestDeadline, onRequestSuccess: onRequestSuccess ? () => {
+    requestDeadline.throwIfAborted();
+    return onRequestSuccess();
+  } : undefined, pxpipe: pxpipeSummary, reqTag, log };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
-  const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 
   // Provider forced streaming but client wants JSON. The Responses wire always
   // streams upstream (openaiToOpenAIResponsesRequest pins stream:true), so a
   // non-stream OpenAI/native client behind a Responses upstream must also take
   // this path — handleForcedSSEToJson returns null when the body is not SSE.
   if (!clientRequestedStreaming && (providerRequiresStreaming || providerResponseFormat === FORMATS.OPENAI_RESPONSES)) {
-    const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, toolNameMap, trackDone, appendLog });
+    const result = await requestDeadline.run(() => handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, toolNameMap, trackDone, appendLog }));
     if (result) { streamController.handleComplete(); return result; }
   }
 
   // True non-streaming response
   if (!stream) {
-    const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, trackDone, appendLog });
+    const result = await requestDeadline.run(() => handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, trackDone, appendLog }));
     streamController.handleComplete();
     return result;
   }
 
   // Streaming response
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
-  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, credentials });
+  const result = await requestDeadline.run(() => handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, credentials, trackDone }), (late) => cancelResponseBody(late?.response));
+  requestState.streaming = result.success && result.response?.headers.get("content-type")?.includes("text/event-stream");
+  return result;
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {
