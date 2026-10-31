@@ -1,3 +1,4 @@
+import { isRequestAbortError, cancelResponseBody } from "open-sse/utils/requestDeadline.js";
 import { getModelInfo } from "../services/model.js";
 import { getProviderCredentials } from "../services/auth.js";
 import { checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -32,7 +33,10 @@ export async function resolveSmartChoice({
   routerModel = DEFAULT_SYSTEMONE_ROUTER_MODEL,
   log,
   timeoutMs = DEFAULT_SYSTEMONE_TIMEOUT_MS,
+  requestDeadline = null,
 }) {
+  const run = (operation, onLateResult) => requestDeadline ? requestDeadline.run(operation, onLateResult) : operation();
+  requestDeadline?.throwIfAborted();
   if (!Array.isArray(models) || models.length <= 1) return null;
 
   const targetModel = (typeof routerModel === "string" && routerModel.trim())
@@ -49,20 +53,20 @@ export async function resolveSmartChoice({
   if (Object.keys(criteria).length === 0) return null;
 
   try {
-    const modelInfo = await getModelInfo(targetModel);
+    const modelInfo = await run(() => getModelInfo(targetModel));
     if (!modelInfo?.provider) {
       log?.warn?.("COMBO", `smart-router: unrecognized router model "${targetModel}"`);
       return null;
     }
 
     const { provider, model } = modelInfo;
-    const credentials = await getProviderCredentials(provider, new Set(), model);
+    const credentials = await run(() => getProviderCredentials(provider, new Set(), model));
     if (!credentials || credentials.allRateLimited) {
       log?.warn?.("COMBO", `smart-router: no credentials available for router provider "${provider}"`);
       return null;
     }
 
-    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    const refreshedCredentials = await run(() => checkAndRefreshToken(provider, credentials));
     const systemoneBody = {
       model,
       state,
@@ -76,21 +80,28 @@ export async function resolveSmartChoice({
     };
 
     let timeoutId;
+    const timeoutController = new AbortController();
     const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error(`System One router timed out after ${timeoutMs}ms`)), timeoutMs);
+      timeoutId = setTimeout(() => {
+        const error = new Error(`System One router timed out after ${timeoutMs}ms`);
+        timeoutController.abort(error);
+        reject(error);
+      }, timeoutMs);
     });
 
-    const corePromise = handleSystemoneCore({
+    const corePromise = run(() => handleSystemoneCore({
+      signal: requestDeadline ? AbortSignal.any([requestDeadline.signal, timeoutController.signal]) : timeoutController.signal,
+      requestDeadline,
       body: systemoneBody,
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
       onRequestSuccess: () => {},
-    });
+    }), (late) => cancelResponseBody(late?.response));
 
     let result;
     try {
-      result = await Promise.race([corePromise, timeoutPromise]);
+      result = await run(() => Promise.race([corePromise, timeoutPromise]));
     } finally {
       clearTimeout(timeoutId);
     }
@@ -100,7 +111,7 @@ export async function resolveSmartChoice({
       return null;
     }
 
-    const json = await result.response.json();
+    const json = await run(() => result.response.json());
     const route = parseSystemOneRouteAnswer(json);
     if (!route || !route.choice) {
       log?.warn?.("COMBO", "smart-router: response missing valid route choice");
@@ -109,6 +120,8 @@ export async function resolveSmartChoice({
 
     return route;
   } catch (err) {
+    if (isRequestAbortError(err)) throw err;
+    requestDeadline?.throwIfAborted();
     log?.warn?.("COMBO", `smart-router: evaluation aborted (${err?.message || String(err)})`);
     return null;
   }

@@ -183,6 +183,7 @@ export async function POST(request, { params }) {
     const routedBody = { ...body, model, stream };
 
     const newRequest = new Request(request.url, {
+      signal: request.signal,
       method: "POST",
       headers: request.headers,
       body: JSON.stringify(routedBody),
