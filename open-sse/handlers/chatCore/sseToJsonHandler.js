@@ -1,3 +1,5 @@
+import { readResponseBody } from "../../utils/readResponseBody.js";
+import { isRequestAbortError } from "../../utils/requestDeadline.js";
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { createErrorResult } from "../../utils/error.js";
@@ -186,12 +188,12 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, toolNameMap, trackDone, appendLog, reqTag, log }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, toolNameMap, trackDone, appendLog, reqTag, log, requestDeadline }) {
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
 
-  trackDone();
+  requestDeadline?.throwIfAborted();
 
   const ctx = {
     provider, model, connectionId,
@@ -206,8 +208,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
   const isCodexResponsesApi = isResponsesProvider(provider) || targetFormat === FORMATS.OPENAI_RESPONSES;
   if (isCodexResponsesApi) {
     try {
-      const jsonResponse = await convertResponsesStreamToJson(providerResponse.body);
-      if (onRequestSuccess) await onRequestSuccess();
+      const jsonResponse = await convertResponsesStreamToJson(providerResponse.body, { requestDeadline });
+      if (onRequestSuccess) {
+        if (requestDeadline) await requestDeadline.run(() => onRequestSuccess());
+        else await onRequestSuccess();
+      }
+      requestDeadline?.throwIfAborted();
+      trackDone();
 
       const usage = jsonResponse.usage || {};
       appendLog({ tokens: usage, status: "200 OK" });
@@ -294,6 +301,8 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
       return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalResp, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
     } catch (err) {
+      requestDeadline?.throwIfAborted();
+      if (isRequestAbortError(err)) throw err;
       console.error("[ChatCore] Responses API SSE→JSON failed:", err);
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Failed to convert streaming response to JSON");
     }
@@ -301,7 +310,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
   // Standard Chat Completions SSE path
   try {
-    const sseText = await providerResponse.text();
+    const sseText = await readResponseBody(providerResponse, requestDeadline);
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
     if (parsed.error) {
@@ -319,7 +328,12 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       );
     }
 
-    if (onRequestSuccess) await onRequestSuccess();
+    if (onRequestSuccess) {
+      if (requestDeadline) await requestDeadline.run(() => onRequestSuccess());
+      else await onRequestSuccess();
+    }
+    requestDeadline?.throwIfAborted();
+    trackDone();
 
     const usage = parsed.usage || {};
     appendLog({ tokens: usage, status: "200 OK" });
@@ -374,6 +388,8 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
     return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalBody, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
   } catch (err) {
+    requestDeadline?.throwIfAborted();
+    if (isRequestAbortError(err)) throw err;
     console.error("[ChatCore] Chat Completions SSE→JSON failed:", err);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Failed to convert streaming response to JSON");
   }

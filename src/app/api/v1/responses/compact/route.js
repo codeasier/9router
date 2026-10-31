@@ -29,6 +29,7 @@ export async function POST(request) {
   const body = await request.json();
   body._compact = true;
   const newRequest = new Request(request.url, {
+    signal: request.signal,
     method: "POST",
     headers: request.headers,
     body: JSON.stringify(body)
