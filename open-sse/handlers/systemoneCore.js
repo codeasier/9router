@@ -1,3 +1,5 @@
+import { readResponseBody } from "../utils/readResponseBody.js";
+import { runWithSignal, cancelResponseBody, isRequestAbortError } from "../utils/requestDeadline.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
 import { HTTP_STATUS, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { PROVIDER_MEDIA } from "../providers/index.js";
@@ -36,7 +38,19 @@ export async function handleSystemoneCore({
   credentials,
   log,
   onRequestSuccess,
+  signal = null,
+  requestDeadline = null,
 }) {
+  requestDeadline?.throwIfAborted();
+  // The smart-router's shorter local timeout also owns body reads, not only fetch.
+  const bodyDeadline = signal ? {
+    signal,
+    throwIfAborted() {
+      requestDeadline?.throwIfAborted();
+      if (signal.aborted) throw signal.reason;
+    },
+    run: (operation) => runWithSignal(signal, operation),
+  } : requestDeadline;
   const { provider, model } = modelInfo;
   const cfg = PROVIDER_MEDIA[provider]?.systemoneConfig;
   let targetUrl = buildSystemoneUrl(credentials?.providerSpecificData?.baseUrl, cfg);
@@ -85,22 +99,28 @@ export async function handleSystemoneCore({
 
   let providerResponse;
   try {
-    providerResponse = await fetch(targetUrl, {
+    const fetchSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_CONNECT_TIMEOUT_MS)])
+      : AbortSignal.timeout(FETCH_CONNECT_TIMEOUT_MS);
+    providerResponse = await runWithSignal(fetchSignal, () => fetch(targetUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(requestBody),
-      ...(typeof AbortSignal?.timeout === "function"
-        ? { signal: AbortSignal.timeout(FETCH_CONNECT_TIMEOUT_MS) }
-        : {}),
-    });
+      signal: fetchSignal,
+    }), cancelResponseBody);
   } catch (error) {
+    if (isRequestAbortError(error)) throw error;
+    requestDeadline?.throwIfAborted();
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     log?.debug?.("SYSTEMONE", `Fetch error: ${errMsg}`);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
   }
 
   if (!providerResponse.ok) {
-    const { statusCode, message } = await parseUpstreamError(providerResponse);
+    const { statusCode, message } = await runWithSignal(signal, () => parseUpstreamError({
+      status: providerResponse.status,
+      text: () => readResponseBody(providerResponse, bodyDeadline),
+    }));
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
     log?.debug?.("SYSTEMONE", `Provider error: ${errMsg}`);
     return createErrorResult(statusCode, errMsg);
@@ -108,11 +128,14 @@ export async function handleSystemoneCore({
 
   let responseBody;
   try {
-    responseBody = await providerResponse.json();
-  } catch {
+    responseBody = await runWithSignal(signal, () => readResponseBody(providerResponse, bodyDeadline, "json"));
+  } catch (error) {
+    if (isRequestAbortError(error)) throw error;
+    requestDeadline?.throwIfAborted();
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Invalid JSON response from ${provider}`);
   }
 
+  requestDeadline?.throwIfAborted();
   if (onRequestSuccess) await onRequestSuccess();
 
   const usage = responseBody?.usage;

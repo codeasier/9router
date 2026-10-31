@@ -4,6 +4,9 @@
 
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
+import { isRequestAbortError, cancelResponseBody, createRequestDeadline, createRequestAbortError } from "../utils/requestDeadline.js";
+import { readResponseBody } from "../utils/readResponseBody.js";
+
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { parseModel } from "./model.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
@@ -15,13 +18,17 @@ import {
   orderModelsByChoice,
 } from "./systemoneRouter.js";
 
+const withinBuild = (deadline, operation, onLateResult) => deadline
+  ? deadline.run(operation, onLateResult)
+  : operation();
+
 // Peek a 2xx combo response for real content. Returns null for non-SSE responses (leave
 // them untouched). For SSE, returns { outcome: "content"|"empty", finishReason, response }
 // where `response` is a faithful replay of the original stream (head buffer + live reader).
-async function peekComboResponse(result, log) {
+async function peekComboResponse(result, log, requestDeadline) {
   const ct = (result.headers.get("content-type") || "").toLowerCase();
   if (!result.body || !ct.includes("text/event-stream")) return null;
-  const peeked = await peekStreamForContent(result.body);
+  const peeked = await peekStreamForContent(result.body, { requestDeadline });
   const response = new Response(reconstructStream(peeked.head, peeked.reader, peeked.pendingRead), {
     status: result.status,
     statusText: result.statusText,
@@ -365,7 +372,9 @@ export async function handleComboChat({
   sessionSticky = true,
   confidenceThreshold = 0.8,
   resolveSmartChoice = null,
+  requestDeadline = null,
 }) {
+  requestDeadline?.throwIfAborted();
   let rotatedModels = models;
   let activeStickyModel = null;
 
@@ -397,7 +406,7 @@ export async function handleComboChat({
       } else if (typeof resolveSmartChoice === "function") {
         // Smart Switch (Adaptive): check if the user's task drastically shifted
         try {
-          const smartResult = await resolveSmartChoice(body, models);
+          const smartResult = await withinBuild(requestDeadline, () => resolveSmartChoice(body, models));
           const newChoice = smartResult?.choice;
           const conf = typeof smartResult?.confidence === "number" ? smartResult.confidence : null;
 
@@ -415,6 +424,7 @@ export async function handleComboChat({
             log.info("COMBO", `smart-router [smart-switch] retained prompt cache model "${activeStickyModel}"`);
           }
         } catch (err) {
+          if (isRequestAbortError(err)) throw err;
           // Fail open to active sticky model
           rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
           log.warn("COMBO", `smart-router error, retained model "${activeStickyModel}"`, { error: err?.message || String(err) });
@@ -425,7 +435,7 @@ export async function handleComboChat({
     } else if (typeof resolveSmartChoice === "function") {
       // Turn 1 or per-turn: evaluate System One to select initial model
       try {
-        const smartResult = await resolveSmartChoice(body, models);
+        const smartResult = await withinBuild(requestDeadline, () => resolveSmartChoice(body, models));
         const conf = typeof smartResult?.confidence === "number" ? smartResult.confidence : null;
 
         if (smartResult?.choice && models.includes(smartResult.choice)) {
@@ -443,6 +453,7 @@ export async function handleComboChat({
           log.info("COMBO", `smart-router no decision, fallback to order: [${models.join(", ")}]`);
         }
       } catch (err) {
+        if (isRequestAbortError(err)) throw err;
         log.warn("COMBO", `smart-router error, fallback to order: [${models.join(", ")}]`, { error: err?.message || String(err) });
       }
     }
@@ -474,11 +485,13 @@ export async function handleComboChat({
   const canFailOver = rotatedModels.length > 1;
 
   for (let i = 0; i < rotatedModels.length; i++) {
+    requestDeadline?.throwIfAborted();
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
+    let result;
     try {
-      const result = await handleSingleModel(body, modelStr);
+      result = await withinBuild(requestDeadline, () => handleSingleModel(body, modelStr), cancelResponseBody);
       
       // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
       // MALFORMED_FUNCTION_CALL) still return 200 and stream empty content, which would
@@ -487,8 +500,9 @@ export async function handleComboChat({
       if (result.ok) {
         let peeked = null;
         try {
-          if (canFailOver) peeked = await peekComboResponse(result, log);
+          if (canFailOver) peeked = await peekComboResponse(result, log, requestDeadline);
         } catch (peekErr) {
+          if (isRequestAbortError(peekErr)) throw peekErr;
           // peekStreamForContent is written not to throw; if reconstruction/Response
           // construction ever does, result.body is already locked by getReader() and can no
           // longer be streamed. Returning `result` would hand the client a locked, unreadable
@@ -509,17 +523,19 @@ export async function handleComboChat({
             const contentType = result.headers?.get?.("content-type") || "";
             if (contentType.includes("application/json")) {
               try {
-                const peekBody = await result.clone().json();
+                const peekBody = await readResponseBody(result.clone(), requestDeadline, "json");
                 if (isZeroContentResponse(peekBody)) {
                   log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, falling back to next model`);
                   if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
                     clearStickyComboSession(comboName, sessionId);
                   }
+                  cancelResponseBody(result);
                   lastError = "Zero usable content";
                   lastStatus = 200;
                   continue;
                 }
-              } catch {
+              } catch (error) {
+                if (isRequestAbortError(error)) throw error;
                 // Ignore JSON parse errors
               }
             }
@@ -571,10 +587,11 @@ export async function handleComboChat({
       let errorText = result.statusText || "";
       let retryAfter = null;
       try {
-        const errorBody = await result.clone().json();
+        const errorBody = await readResponseBody(result.clone(), requestDeadline, "json");
         errorText = errorBody?.error?.message || errorBody?.error || errorBody?.message || errorText;
         retryAfter = errorBody?.retryAfter || null;
-      } catch {
+      } catch (error) {
+        if (isRequestAbortError(error)) throw error;
         // Ignore JSON parse errors
       }
 
@@ -618,7 +635,8 @@ export async function handleComboChat({
       if (cooldownMs && cooldownMs > 0 && cooldownMs <= 5000 &&
           (result.status === 503 || result.status === 502 || result.status === 504)) {
         log.info("COMBO", `Model ${modelStr} transient ${result.status}, waiting ${cooldownMs}ms before next`);
-        await new Promise(r => setTimeout(r, cooldownMs));
+        if (requestDeadline) await requestDeadline.sleep(cooldownMs);
+        else await new Promise(r => setTimeout(r, cooldownMs));
       }
 
       // Fallback to next model
@@ -626,6 +644,9 @@ export async function handleComboChat({
       if (!lastStatus) lastStatus = result.status;
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
+      cancelResponseBody(result);
+      if (isRequestAbortError(error)) throw error;
+      requestDeadline?.throwIfAborted();
       // Catch unexpected exceptions to ensure fallback continues
       if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
         clearStickyComboSession(comboName, sessionId);
@@ -762,12 +783,24 @@ const FUSION_DEFAULTS = {
 };
 
 // Resolve a Response (or {__error}) within ms; the loser keeps running but is ignored.
-function withTimeout(promise, ms) {
+function withTimeout(promise, ms, signal, onTimeout) {
   return new Promise((resolve) => {
-    const t = setTimeout(() => resolve({ __timeout: true }), ms);
-    Promise.resolve(promise)
-      .then((v) => { clearTimeout(t); resolve(v); })
-      .catch((e) => { clearTimeout(t); resolve({ __error: e }); });
+    let settled = false;
+    const finish = (result) => {
+      if (settled) { if (result instanceof Response) cancelResponseBody(result); return; }
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = () => finish({ __error: signal.reason });
+    const timer = setTimeout(() => {
+      finish({ __timeout: true });
+      onTimeout?.();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    Promise.resolve(promise).then(finish, (error) => finish({ __error: error }));
   });
 }
 
@@ -778,7 +811,7 @@ function withTimeout(promise, ms) {
  * still preferring a full panel when everyone is fast. Bounded by a hard timeout.
  * Returns a sparse array aligned to `calls` (undefined = not yet / dropped).
  */
-function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs }) {
+function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs, signal }) {
   return new Promise((resolve) => {
     const out = new Array(calls.length);
     let settled = 0;
@@ -790,14 +823,18 @@ function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs })
       finished = true;
       clearTimeout(hardTimer);
       if (graceTimer) clearTimeout(graceTimer);
+      signal?.removeEventListener("abort", finish);
       resolve(out);
     };
     const hardTimer = setTimeout(finish, panelHardTimeoutMs);
+    signal?.addEventListener("abort", finish, { once: true });
+    if (signal?.aborted) finish();
     calls.forEach((p, i) => {
       Promise.resolve(p)
-        .then((v) => { out[i] = v; })
-        .catch((e) => { out[i] = { __error: e }; })
+        .then((v) => { if (finished) { cancelResponseBody(v); return; } out[i] = v; })
+        .catch((e) => { if (!finished) out[i] = { __error: e }; })
         .finally(() => {
+          if (finished) return;
           settled++;
           if (out[i] && out[i].ok) ok++;
           if (settled === calls.length) return finish();
@@ -830,7 +867,8 @@ function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs })
  * @param {Object} [options.tuning] - Override FUSION_DEFAULTS (minPanel, grace, timeout)
  * @returns {Promise<Response>}
  */
-export async function handleFusionChat({ body, models, handleSingleModel, log, comboName, judgeModel, tuning }) {
+export async function handleFusionChat({ body, models, handleSingleModel, log, comboName, judgeModel, tuning, requestDeadline = null }) {
+  requestDeadline?.throwIfAborted();
   const panel = Array.isArray(models) ? models.filter(Boolean) : [];
   if (panel.length === 0) {
     return new Response(
@@ -841,7 +879,7 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
 
   // A single-model fusion has nothing to fuse — just answer directly.
   if (panel.length === 1) {
-    return handleSingleModel(body, panel[0]);
+    return withinBuild(requestDeadline, () => handleSingleModel(body, panel[0]), cancelResponseBody);
   }
 
   const cfg = { ...FUSION_DEFAULTS, ...(tuning || {}) };
@@ -864,8 +902,37 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   }
 
   const t0 = Date.now();
-  const calls = panel.map((m) => withTimeout(handleSingleModel(panelBody, m, true), cfg.panelHardTimeoutMs));
-  const settled = await collectPanel(calls, { ...cfg, minPanel });
+  // Panels may be abandoned by quorum/grace before the judge responds. Give
+  // each a cancellable child of the SAME remaining budget, so finishing the
+  // parent's downstream response never frees an ignored panel to run forever.
+  requestDeadline?.throwIfAborted();
+  const panelDeadlines = panel.map((_, i) => requestDeadline
+    ? createRequestDeadline({ signal: requestDeadline.signal, timeoutMs: requestDeadline.remainingMs(), requestId: `${requestDeadline.requestId}.panel${i + 1}` })
+    : null);
+  const stopPanel = (i, response) => {
+    cancelResponseBody(response);
+    panelDeadlines[i]?.abort(createRequestAbortError("CLIENT_DISCONNECTED"));
+    panelDeadlines[i]?.dispose();
+  };
+  const calls = panel.map((m, i) => {
+    const scoped = panelDeadlines[i];
+    return withTimeout(
+      withinBuild(scoped, () => scoped ? handleSingleModel(panelBody, m, true, scoped) : handleSingleModel(panelBody, m, true), cancelResponseBody),
+      cfg.panelHardTimeoutMs, scoped?.signal, () => stopPanel(i),
+    );
+  });
+  let settled;
+  try {
+    settled = await withinBuild(requestDeadline, () => collectPanel(calls, { ...cfg, minPanel, signal: requestDeadline?.signal }));
+    requestDeadline?.throwIfAborted();
+    const terminalPanelError = settled.find((res) => isRequestAbortError(res?.__error));
+    if (terminalPanelError) throw terminalPanelError.__error;
+  } catch (error) {
+    panelDeadlines.forEach((_, i) => stopPanel(i, settled?.[i]));
+    throw error;
+  }
+  // Settled is a stable snapshot. Late completions are canceled by the collector.
+  panelDeadlines.forEach((_, i) => { if (!settled[i] || settled[i].__timeout || settled[i].__error) stopPanel(i); });
   log.info("FUSION", `fan-out collected in ${Date.now() - t0}ms`);
 
   // 2. Collect successful answers.
@@ -876,9 +943,9 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
     if (!res) { log.warn("FUSION", `Panel ${model} dropped (straggler/timeout)`); continue; }
     if (res.__timeout) { log.warn("FUSION", `Panel ${model} timed out`); continue; }
     if (res.__error) { log.warn("FUSION", `Panel ${model} threw`, { error: res.__error?.message || String(res.__error) }); continue; }
-    if (!res.ok) { log.warn("FUSION", `Panel ${model} failed`, { status: res.status }); continue; }
+    if (!res.ok) { log.warn("FUSION", `Panel ${model} failed`, { status: res.status }); stopPanel(i, res); continue; }
     try {
-      const json = await res.clone().json();
+      const json = await readResponseBody(res, requestDeadline, "json");
       const text = extractPanelText(json);
       if (text) {
         answers.push({ model, text });
@@ -887,7 +954,14 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
         log.warn("FUSION", `Panel ${model} returned empty content`);
       }
     } catch (e) {
+      if (isRequestAbortError(e)) {
+        panelDeadlines.forEach((_, index) => stopPanel(index, settled[index]));
+        throw e;
+      }
       log.warn("FUSION", `Panel ${model} unparseable`, { error: e.message || String(e) });
+    } finally {
+      cancelResponseBody(res);
+      panelDeadlines[i]?.dispose();
     }
   }
 
@@ -901,13 +975,13 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   }
   if (answers.length === 1) {
     log.info("FUSION", `Only ${answers[0].model} succeeded — answering directly (no fusion)`);
-    return handleSingleModel(body, answers[0].model);
+    return withinBuild(requestDeadline, () => handleSingleModel(body, answers[0].model), cancelResponseBody);
   }
 
   // 4. Judge analyzes + writes one final answer (streams to client if requested).
   const judgeBody = appendUserTurn(body, buildJudgePrompt(answers));
   log.info("FUSION", `Judging ${answers.length} answers with ${judge}`);
-  return handleSingleModel(judgeBody, judge);
+  return withinBuild(requestDeadline, () => handleSingleModel(judgeBody, judge), cancelResponseBody);
 }
 
 export {
