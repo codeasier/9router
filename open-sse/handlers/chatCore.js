@@ -597,13 +597,15 @@ async function handleChatCoreAttempt({ body, modelInfo, credentials, log, onCred
   // streams upstream (openaiToOpenAIResponsesRequest pins stream:true), so a
   // non-stream OpenAI/native client behind a Responses upstream must also take
   // this path — handleForcedSSEToJson returns null when the body is not SSE.
-  if (!clientRequestedStreaming && (providerRequiresStreaming || providerResponseFormat === FORMATS.OPENAI_RESPONSES)) {
+  const shouldAggregateResponse = !clientRequestedStreaming && (providerRequiresStreaming || providerResponseFormat === FORMATS.OPENAI_RESPONSES);
+  if (shouldAggregateResponse) {
     const result = await requestDeadline.run(() => handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, toolNameMap, trackDone, appendLog }));
     if (result) { streamController.handleComplete(); return result; }
   }
 
-  // True non-streaming response
-  if (!stream) {
+  // A forced-stream provider may still answer with JSON. Keep that body under
+  // the build deadline too, rather than handing it to the SSE streaming path.
+  if (!stream || shouldAggregateResponse) {
     const result = await requestDeadline.run(() => handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, trackDone, appendLog }));
     streamController.handleComplete();
     return result;
