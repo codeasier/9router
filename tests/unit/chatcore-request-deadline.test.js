@@ -266,6 +266,15 @@ describe("chat core response-preparation deadline", () => {
     deadline.dispose();
   });
 
+  it("aggregates a JSON reply from a forced-stream provider for a non-streaming client", async () => {
+    const result = await handleChatCore(options());
+    expect(mocks.execute.mock.calls[0][0].stream).toBe(true);
+    expect(result.success).toBe(true);
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    expect((await result.response.json()).choices[0].message.content).toBe("ok");
+    expectReleasedOnce();
+  });
+
   it("shares the original account/combo deadline instead of finishing or resetting it", async () => {
     const deadline = createRequestDeadline({ timeoutMs: 100 });
     const finish = vi.spyOn(deadline, "finish");
@@ -283,7 +292,12 @@ describe("chat core response-preparation deadline", () => {
     deadline.dispose();
   });
 
-  it.each(["codex", "opencode-go", "opencode-lite"])("keeps a healthy %s stream alive past the build budget, then cancels on disconnect", async (provider) => {
+  it.each([
+    { title: "native Codex regular", provider: "codex", model: "gpt-6.1-sol-parallel", wire: "openai-responses", client: "codex-cli/fixture" },
+    { title: "OpenCode Go chat", provider: "opencode-go", model: "deepseek-v4.1-flash", wire: "openai", client: "opencode/fixture" },
+    { title: "OpenCode client to Codex regular", provider: "codex", model: "gpt-6.1-sol-parallel", wire: "openai-responses", client: "opencode/fixture" },
+    { title: "OpenCode client to Codex Lite", provider: "codex", model: "gpt-6-luna", wire: "openai-responses", client: "opencode/fixture" },
+  ])("keeps a healthy $title stream alive past the build budget, then cancels on disconnect", async ({ provider, model, wire, client: userAgent }) => {
     let source;
     const cancel = vi.fn();
     const providerResponse = new Response(new ReadableStream({ start(controller) { source = controller; }, cancel }), {
@@ -291,33 +305,60 @@ describe("chat core response-preparation deadline", () => {
     });
     mocks.execute.mockResolvedValue(upstream(providerResponse));
     const client = new AbortController();
-    const opts = options({ signal: client.signal, modelInfo: { provider, model: "gpt-test" } });
-    opts.body.stream = true;
-    if (provider === "codex") {
-      opts.sourceFormatOverride = "openai-responses";
-      opts.userAgent = "codex-cli/fixture";
-      opts.clientRawRequest.headers["user-agent"] = "codex-cli/fixture";
-      opts.body.input = "hello";
-    }
+    const opts = options({ signal: client.signal, modelInfo: { provider, model }, userAgent, sourceFormatOverride: wire });
+    opts.body = {
+      model: `${provider}/${model}`, stream: true,
+      ...(wire === "openai-responses" ? { input: "hello" } : { messages: [{ role: "user", content: "hello" }] }),
+    };
+    opts.clientRawRequest = {
+      endpoint: wire === "openai-responses" ? "/v1/responses" : "/v1/chat/completions",
+      body: opts.body, headers: { "user-agent": userAgent },
+    };
     const result = await handleChatCore(opts);
     expect(result.success).toBe(true);
+    const dispatch = mocks.execute.mock.calls[0][0];
+    expect(dispatch.model).toBe(model);
+    if (wire === "openai") {
+      expect(opts.credentials.runtimeTransport.format).toBe("openai");
+      expect(dispatch.body.messages).toBeDefined();
+    } else expect(dispatch.body.input).toBeDefined();
+
     const read = result.response.body.getReader();
-    const chunk = provider === "codex"
-      ? 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\n'
-      : 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n';
-    for (let elapsed = 0; elapsed <= CHAT_BUILD_TIMEOUT_MS; elapsed += 20_000) {
-      const next = read.read();
+    const decoder = new TextDecoder();
+    let received = "";
+    let settled = false;
+    // SSE event/data/blank lines are separate output chunks. Continuously drain
+    // them; never assume that one upstream frame corresponds to one reader.read.
+    const consumption = (async () => {
+      while (true) {
+        const { done, value } = await read.read();
+        if (done) return;
+        received += decoder.decode(value, { stream: true });
+      }
+    })().then(
+      () => { settled = true; return null; },
+      (error) => { settled = true; return error; },
+    );
+    for (let elapsed = 0; elapsed <= CHAT_BUILD_TIMEOUT_MS + 20_000; elapsed += 20_000) {
+      const marker = `chunk-at-${elapsed}`;
+      const event = wire === "openai-responses"
+        ? { type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: "msg_fixture", delta: marker }
+        : { choices: [{ index: 0, delta: { content: marker } }] };
+      const chunk = `${wire === "openai-responses" ? "event: response.output_text.delta\n" : ""}data: ${JSON.stringify(event)}\n\n`;
       source.enqueue(encoder.encode(chunk));
-      expect((await next).done).toBe(false);
+      for (let n = 0; n < 150 && !received.includes(marker); n++) await Promise.resolve();
+      expect(received).toContain(marker);
+      expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(20_000);
     }
-    expect(mocks.execute.mock.calls[0][0].signal.aborted).toBe(false);
-    const next = read.read();
-    const abortedRead = expect(next).rejects.toMatchObject({ code: "CLIENT_DISCONNECTED" });
+    expect(dispatch.signal.aborted).toBe(false);
+    expect(settled).toBe(false);
     client.abort("private disconnect reason");
-    await abortedRead;
+    expect(await consumption).toMatchObject({ code: "CLIENT_DISCONNECTED" });
+    // Fresh reads reject after abort even if earlier reads already delivered data.
+    await expect(read.read()).rejects.toMatchObject({ code: "CLIENT_DISCONNECTED" });
     await flush();
-    expect(mocks.execute.mock.calls[0][0].signal.aborted).toBe(true);
+    expect(dispatch.signal.aborted).toBe(true);
     expect(cancel).toHaveBeenCalledTimes(1);
     expectReleasedOnce();
     read.releaseLock();
