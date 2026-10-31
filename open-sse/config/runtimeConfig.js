@@ -71,6 +71,11 @@ export const EMPTY_PEEK_DEADLINE_MS = envMs("EMPTY_PEEK_DEADLINE_MS", 45 * 1000)
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
 
+// One chat request's budget until a downstream Response is ready, shared by
+// preprocessing, attempts, backoff and account/model fallback. Leave headroom
+// below common 120s client/proxy limits; this is NOT a streaming lifetime limit.
+export const CHAT_BUILD_TIMEOUT_MS = Math.min(envMs("CHAT_BUILD_TIMEOUT_MS", 110 * 1000), 2_147_483_647);
+
 // Reset-credit inventory and consume calls must not hold an account lock forever.
 export const CODEX_RESET_CREDIT_REQUEST_TIMEOUT_MS = envMs("CODEX_RESET_CREDIT_REQUEST_TIMEOUT_MS", 30 * 1000);
 

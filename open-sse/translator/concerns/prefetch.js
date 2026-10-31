@@ -1,3 +1,4 @@
+import { requestAbortReason } from "../../utils/requestDeadline.js";
 // Pre-fetch remote image URLs into base64 BEFORE translation, for target
 // formats whose upstream providers cannot fetch remote URLs themselves
 // (they require inline base64). Runs on the source-format body.
@@ -78,15 +79,18 @@ function collectImageRefs(body, sourceFormat) {
  * @returns {Promise<number>} count of images converted
  */
 export async function prefetchRemoteImages(body, sourceFormat, targetFormat, options = {}) {
+  if (options.signal?.aborted) throw requestAbortReason(options.signal);
   if (!body || !TARGETS_NEED_BASE64.has(targetFormat)) return 0;
   const refs = collectImageRefs(body, sourceFormat);
   if (!refs.length) return 0;
 
   let converted = 0;
   for (const ref of refs) {
+    if (options.signal?.aborted) throw requestAbortReason(options.signal);
     const url = ref.get();
     if (parseDataUri(url)) continue; // already inline
     const fetched = await fetchImageAsBase64(url, options);
+    if (options.signal?.aborted) throw requestAbortReason(options.signal);
     if (!fetched) continue;
     if (ref.set) ref.set(fetched.url);
     else if (ref.part) { delete ref.part.fileData; ref.part.inlineData = { mimeType: fetched.mimeType, data: fetched.url.split(",")[1] }; }

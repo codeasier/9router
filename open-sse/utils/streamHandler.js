@@ -1,6 +1,7 @@
 // Stream handler with disconnect detection - shared for all providers
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { createRequestAbortError, isRequestAbortError, requestAbortReason } from "./requestDeadline.js";
 
 // Get HH:MM:SS timestamp
 function getTimeString() {
@@ -15,14 +16,24 @@ function getTimeString() {
  * @param {string} options.provider - Provider name
  * @param {string} options.model - Model name
  */
-export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "" } = {}) {
+export function createStreamController({ signal, onDisconnect, onError, log, provider, model, reqTag = "" } = {}) {
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
-  let abortTimeout = null;
+
+  const detach = () => signal?.removeEventListener("abort", onParentAbort);
+  const onParentAbort = () => {
+    if (disconnected) return;
+    disconnected = true;
+    const error = requestAbortReason(signal);
+    detach();
+    abortController.abort(error);
+    onDisconnect?.({ reason: error.code, duration: Date.now() - startTime });
+  };
+  if (signal?.aborted) onParentAbort();
+  else signal?.addEventListener("abort", onParentAbort, { once: true });
 
   // Only abnormal terminations are logged; normal completion is covered by "📊 done".
-  // isError uses errorLine (always shown, ignores LOG_LEVEL) so failures survive quiet levels.
   const logStream = (symbol, status, isError = false) => {
     const duration = Date.now() - startTime;
     const emit = isError ? log?.errorLine : log?.line;
@@ -33,57 +44,37 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
   return {
     signal: abortController.signal,
     startTime,
-
     isConnected: () => !disconnected,
 
-    // Call when client disconnects
-    handleDisconnect: (reason = "client_closed") => {
+    handleDisconnect: () => {
       if (disconnected) return;
       disconnected = true;
-
-      // Debug-only: Responses API has no [DONE] sentinel, so codex/droid close the
-      // socket on every completed request. "📊 done" is the authoritative outcome line.
-      dbg("CTRL", `${provider}/${model} | disconnect=${reason} | dur=${Date.now() - startTime}ms`);
-
-      // Delay abort to allow cleanup
-      abortTimeout = setTimeout(() => {
-        abortController.abort();
-      }, 500);
-
-      onDisconnect?.({ reason, duration: Date.now() - startTime });
+      detach();
+      // Never log or forward arbitrary downstream cancellation reasons.
+      const error = createRequestAbortError("CLIENT_DISCONNECTED");
+      dbg("CTRL", `${provider}/${model} | disconnect=client_closed | dur=${Date.now() - startTime}ms`);
+      abortController.abort(error);
+      onDisconnect?.({ reason: "client_closed", duration: Date.now() - startTime });
     },
 
-    // Call when stream completes normally (no line here — "📊 done" is authoritative)
     handleComplete: () => {
-      if (disconnected) return;
       disconnected = true;
-
-      if (abortTimeout) {
-        clearTimeout(abortTimeout);
-        abortTimeout = null;
-      }
+      detach();
     },
 
-    // Call on error
     handleError: (error) => {
       if (disconnected) return;
       disconnected = true;
-
-      if (abortTimeout) {
-        clearTimeout(abortTimeout);
-        abortTimeout = null;
-      }
-
-      if (error.name === "AbortError") {
+      detach();
+      if (error?.name === "AbortError" || isRequestAbortError(error)) {
         logStream("⚡", "ABORTED");
-        return;
+      } else {
+        logStream("✗", `ERROR: ${error.message}${error.stack ? `\n    ${error.stack}` : ""}`, true);
       }
-
-      logStream("✗", `ERROR: ${error.message}${error.stack ? `\n    ${error.stack}` : ""}`, true);
       onError?.(error);
     },
 
-    abort: () => abortController.abort()
+    abort: (reason) => abortController.abort(reason)
   };
 }
 
@@ -170,8 +161,8 @@ export function createDisconnectAwareStream(transformStream, streamController, o
 
     cancel(reason) {
       streamController.handleDisconnect(reason || "cancelled");
-      reader.cancel();
-      writer.abort();
+      reader.cancel().catch(() => {});
+      writer.abort().catch(() => {});
     }
   });
 }
@@ -203,6 +194,12 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   const clearStall = () => {
     if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
   };
+  const onAbort = () => clearStall();
+  streamController.signal?.addEventListener("abort", onAbort, { once: true });
+  const cleanup = () => {
+    clearStall();
+    streamController.signal?.removeEventListener("abort", onAbort);
+  };
   const armStall = () => {
     clearStall();
     stallTimer = setTimeout(() => {
@@ -221,13 +218,13 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     signal: streamController.signal,
     startTime: streamController.startTime,
     isConnected: () => streamController.isConnected(),
-    handleComplete: () => { dbg(tag, `complete | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleComplete(); },
-    handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleError(e); },
-    handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleDisconnect(r); },
-    abort: () => { clearStall(); streamController.abort(); }
+    handleComplete: () => { dbg(tag, `complete | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); cleanup(); streamController.handleComplete(); },
+    handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); cleanup(); streamController.handleError(e); },
+    handleDisconnect: (r) => { dbg(tag, `disconnect: client_closed | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); cleanup(); streamController.handleDisconnect(r); },
+    abort: () => { cleanup(); streamController.abort(); }
   };
 
-  armStall();
+  if (!streamController.signal?.aborted) armStall();
   dbg(tag, `pipe start | stallTimeout=${stallTimeoutMs}ms`);
 
   const upstreamTap = new TransformStream({
@@ -248,8 +245,8 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   });
 
   const transformedBody = providerResponse.body
-    .pipeThrough(upstreamTap)
-    .pipeThrough(transformStream);
+    .pipeThrough(upstreamTap, { signal: streamController.signal })
+    .pipeThrough(transformStream, { signal: streamController.signal });
 
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },

@@ -1,0 +1,98 @@
+name: Chat request deadline
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/**"
+      - "src/sse/**"
+      - "src/app/api/**"
+      - "tests/**"
+      - "package.json"
+      - "next.config.mjs"
+      - ".github/workflows/chat-request-deadline.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chat-request-deadline-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  regression-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      ENABLE_REQUEST_LOGS: "false"
+      RUN_REAL: "0"
+      RUN_E2E: "0"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Isolate runtime data
+        run: echo "DATA_DIR=$RUNNER_TEMP/9router-deadline-data" >> "$GITHUB_ENV"
+      # This repository does not commit a root lockfile; install both independent packages.
+      - name: Install gateway and test dependencies
+        run: |
+          npm install --no-audit --no-fund --package-lock=false
+          npm --prefix tests install --no-audit --no-fund --package-lock=false
+      - name: Changed transport syntax and lint
+        run: >-
+          npx eslint
+          open-sse/utils/requestDeadline.js open-sse/utils/readResponseBody.js
+          open-sse/utils/proxyFetch.js open-sse/utils/stream.js open-sse/utils/streamHandler.js
+          open-sse/config/runtimeConfig.js open-sse/executors/base.js open-sse/executors/codex.js
+          open-sse/handlers/chatCore.js open-sse/handlers/chatCore/nonStreamingHandler.js
+          open-sse/handlers/chatCore/sseToJsonHandler.js open-sse/handlers/chatCore/streamingHandler.js
+          open-sse/handlers/systemoneCore.js open-sse/rtk/headroom.js open-sse/rtk/pxpipe.js
+          open-sse/services/combo.js open-sse/services/emptyFailover.js open-sse/services/tokenRefresh.js
+          open-sse/transformer/streamToJsonConverter.js open-sse/translator/concerns/image.js
+          open-sse/translator/concerns/prefetch.js src/sse/handlers/chat.js
+          src/sse/services/systemoneRouter.js src/app/api/v1/responses/compact/route.js
+          'src/app/api/v1beta/models/[...path]/route.js'
+          tests/setup/no-network.js tests/vitest.deadline.config.js
+          tests/unit/*request-deadline.test.js tests/unit/chat-build-deadline.test.js
+      - name: Offline deadline and related transport regressions
+        working-directory: tests
+        run: >-
+          npm test -- --config vitest.deadline.config.js
+          unit/request-deadline.test.js
+          unit/base-request-deadline.test.js
+          unit/codex-request-deadline.test.js
+          unit/proxy-request-deadline.test.js
+          unit/chatcore-request-deadline.test.js
+          unit/chat-build-deadline.test.js
+          unit/combo-request-deadline.test.js
+          unit/base-executor-retry.test.js
+          unit/antigravity-retry-hook.test.js
+          unit/codex-fast-capacity.test.js
+          unit/codex-gpt6-lite.test.js
+          unit/codex-responses-parallel.test.js
+          unit/codex-parallel-chatcore.test.js
+          unit/codex-native-passthrough-thinking.test.js
+          unit/codex-reasoning-history.test.js
+          unit/combo-empty-failover.test.js
+          unit/combo-request-scoped-fallback.test.js
+          unit/combo-fusion.test.js
+          unit/combo-smart-router.test.js
+          unit/chat-key-policy-lifecycle.test.js
+          unit/strict-proxy-chatcore.test.js
+          unit/strict-proxy-enforcement.test.js
+          unit/strict-proxy-passthrough.test.js
+          unit/headroom-chat-core.test.js
+          unit/headroom.test.js
+          unit/pxpipe.test.js
+          unit/claude-forced-sse-json.test.js
+          unit/openai-responses-nonstream.test.js
+          unit/antigravity-nonstream-usage-3260.test.js
+          unit/stream-tool-call-id.test.js
+          unit/prefetch-images.test.js
+          unit/ollama-systemone.test.js
+      - name: Production gateway build and standalone assets
+        run: npm run build

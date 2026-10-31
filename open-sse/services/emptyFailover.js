@@ -30,6 +30,7 @@ import { toOpenAIFinish } from "../translator/concerns/finishReason.js";
 import { FORMATS } from "../translator/formats.js";
 import { EMPTY_PEEK_DEADLINE_MS } from "../config/runtimeConfig.js";
 import { parseSSELine } from "../utils/streamHelpers.js";
+import { isRequestAbortError } from "../utils/requestDeadline.js";
 
 // OpenAI chat content test. A chunk counts as content only if it carries
 // assistant output the caller can consume:
@@ -192,7 +193,8 @@ export function isNoRetryFinish(finishReason) {
 // Returns the decision, the buffered head bytes, the live reader, and — if the deadline fired
 // mid-read — the still-pending read() (`pendingRead`) so the caller can resume from it WITHOUT
 // abandoning the chunk it will deliver.
-export async function peekStreamForContent(body, { deadlineMs = EMPTY_PEEK_DEADLINE_MS } = {}) {
+export async function peekStreamForContent(body, { deadlineMs = EMPTY_PEEK_DEADLINE_MS, requestDeadline = null } = {}) {
+  requestDeadline?.throwIfAborted();
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const headChunks = [];
@@ -219,8 +221,16 @@ export async function peekStreamForContent(body, { deadlineMs = EMPTY_PEEK_DEADL
     if (!pendingRead) pendingRead = reader.read();
     let res;
     try {
-      res = await Promise.race([pendingRead, deadline]);
+      res = requestDeadline
+        ? await requestDeadline.run(() => Promise.race([pendingRead, deadline]))
+        : await Promise.race([pendingRead, deadline]);
     } catch (err) {
+      if (isRequestAbortError(err)) {
+        clearTimeout(timer);
+        try { reader.cancel(err).catch(() => {}); } catch { /* already closed */ }
+        try { reader.releaseLock(); } catch { /* pending/non-standard reader */ }
+        throw err;
+      }
       // Upstream errored mid-peek. Body is locked to this reader; hand it back so the caller
       // can reconstruct (the replay will surface the same error). The failed read is consumed.
       pendingRead = null;
@@ -261,15 +271,21 @@ export function reconstructStream(head, reader, pendingRead = null) {
       for (const chunk of head) controller.enqueue(chunk);
     },
     async pull(controller) {
-      let result;
-      if (pending) { result = await pending; pending = null; }
-      else { result = await reader.read(); }
-      const { done, value } = result;
-      if (done) { controller.close(); return; }
-      controller.enqueue(value);
+      try {
+        let result;
+        if (pending) { result = await pending; pending = null; }
+        else { result = await reader.read(); }
+        const { done, value } = result;
+        if (done) { reader.releaseLock(); controller.close(); return; }
+        controller.enqueue(value);
+      } catch (error) {
+        try { reader.releaseLock(); } catch { /* pending/non-standard reader */ }
+        controller.error(error);
+      }
     },
     cancel(reason) {
-      try { reader.cancel(reason); } catch { /* already closed */ }
+      try { Promise.resolve(reader.cancel(reason)).catch(() => {}); } catch { /* already closed */ }
+      try { reader.releaseLock(); } catch { /* pending/non-standard reader */ }
     },
   });
 }
