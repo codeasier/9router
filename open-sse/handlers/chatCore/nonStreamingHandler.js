@@ -1,3 +1,5 @@
+import { readResponseBody } from "../../utils/readResponseBody.js";
+import { isRequestAbortError } from "../../utils/requestDeadline.js";
 import { FORMATS } from "../../translator/formats.js";
 import { needsTranslation } from "../../translator/index.js";
 import { openAICompletionToClaudeMessage } from "../../translator/concerns/claudeMessage.js";
@@ -336,13 +338,13 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
 /**
  * Handle non-streaming response from provider.
  */
-export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log }) {
-  trackDone();
+export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log, requestDeadline }) {
+  requestDeadline?.throwIfAborted();
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
 
   if (contentType.includes("text/event-stream")) {
-    const sseText = await providerResponse.text();
+    const sseText = await readResponseBody(providerResponse, requestDeadline);
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) {
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
@@ -351,13 +353,18 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     responseBody = parsed;
   } else {
     try {
-      responseBody = await providerResponse.json();
+      responseBody = await readResponseBody(providerResponse, requestDeadline, "json");
     } catch (err) {
+      requestDeadline?.throwIfAborted();
+      if (isRequestAbortError(err)) throw err;
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
       console.error(`[ChatCore] Failed to parse JSON from ${provider}:`, err.message);
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Invalid JSON response from ${provider}`);
     }
   }
+
+  requestDeadline?.throwIfAborted();
+  trackDone();
 
   // Unwrap before any consumer reads choices/usage so non-stream clients get a
   // bare OpenAI body and usage tracking sees data.usage. No-op unless the
@@ -369,6 +376,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     Promise.resolve()
       .then(onRequestSuccess)
       .catch(err => {
+        if (isRequestAbortError(err)) return;
         console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);
       });
   }

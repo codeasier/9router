@@ -1,3 +1,4 @@
+import { runWithSignal, requestAbortReason } from "../utils/requestDeadline.js";
 // PXPIPE: render bulky Claude-format context as dense PNGs via pxpipe-proxy's
 // library API (transformAnthropicMessages). Fail-open like every token saver:
 // any error/timeout returns { body: null, summary } and leaves the request untouched.
@@ -29,7 +30,8 @@ function skipped(reason, extra = {}) {
 // { body: <new body object> | null, summary } — body is null when nothing changed.
 // opts.transform is injected by the host (src side) so open-sse stays free of
 // filesystem/install concerns and remains usable standalone.
-export async function compressWithPxpipe(body, { enabled, format, model, minChars, timeoutMs, transform } = {}) {
+export async function compressWithPxpipe(body, { enabled, format, model, minChars, timeoutMs, transform, signal } = {}) {
+  if (signal?.aborted) throw requestAbortReason(signal);
   if (!enabled) return skipped("disabled");
   if (typeof transform !== "function") return skipped("not_installed");
   if (!body) return skipped("missing_body");
@@ -42,19 +44,20 @@ export async function compressWithPxpipe(body, { enabled, format, model, minChar
     return skipped("below_threshold", { originalChars, threshold });
   }
 
+  let timeout;
   try {
     const encoded = new TextEncoder().encode(JSON.stringify(body));
     const budget = Number(timeoutMs) > 0 ? Number(timeoutMs) : DEFAULT_TIMEOUT_MS;
     // transformAnthropicMessages is local CPU work and can't be aborted; race a
     // timer and discard the result if it loses (input body is never mutated).
-    const result = await Promise.race([
+    const result = await runWithSignal(signal, () => Promise.race([
       transform({
         body: encoded,
         model,
         options: { minCompressChars: threshold },
       }),
-      new Promise((resolve) => setTimeout(() => resolve(null), budget)),
-    ]);
+      new Promise((resolve) => { timeout = setTimeout(() => resolve(null), budget); }),
+    ]));
     if (!result) return skipped("timeout", { originalChars, durationMs: Date.now() - startedAt });
     if (!result.applied) {
       return skipped(result.reason || "passthrough", {
@@ -93,7 +96,10 @@ export async function compressWithPxpipe(body, { enabled, format, model, minChar
       : 0;
     return { body: newBody, summary };
   } catch (e) {
+    if (signal?.aborted) throw requestAbortReason(signal);
     return skipped("transform_error", { detail: e?.message || String(e), originalChars, durationMs: Date.now() - startedAt });
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

@@ -46,12 +46,18 @@ const EMPTY_RESPONSE = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
  * @param {ReadableStream} stream - SSE stream from provider
  * @returns {Promise<Object>} Final JSON response in Responses API format
  */
-export async function convertResponsesStreamToJson(stream) {
+export async function convertResponsesStreamToJson(stream, { requestDeadline } = {}) {
+  requestDeadline?.throwIfAborted();
   if (!stream || typeof stream.getReader !== "function") {
     return { id: `resp_${Date.now()}`, object: "response", created_at: Math.floor(Date.now() / 1000), status: "failed", output: [], usage: { ...EMPTY_RESPONSE } };
   }
 
   const reader = stream.getReader();
+  const onAbort = () => {
+    try { Promise.resolve(reader.cancel(requestDeadline.signal.reason)).catch(() => {}); } catch { /* best effort */ }
+  };
+  requestDeadline?.signal.addEventListener("abort", onAbort, { once: true });
+  if (requestDeadline?.signal.aborted) onAbort();
   const decoder = new TextDecoder();
   let buffer = "";
 
@@ -65,7 +71,9 @@ export async function convertResponsesStreamToJson(stream) {
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = requestDeadline
+        ? await requestDeadline.run(() => reader.read())
+        : await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -77,12 +85,14 @@ export async function convertResponsesStreamToJson(stream) {
       }
     }
 
+    requestDeadline?.throwIfAborted();
     // Flush remaining buffer (last event may not end with \n\n)
     if (buffer.trim()) {
       processSSEMessage(buffer, state);
     }
   } finally {
-    reader.releaseLock();
+    requestDeadline?.signal.removeEventListener("abort", onAbort);
+    try { reader.releaseLock(); } catch { /* non-cooperating reader */ }
   }
 
   // Build output array from accumulated items (ordered by index)

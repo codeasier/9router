@@ -1,3 +1,4 @@
+import { runWithSignal, requestAbortReason, cancelResponseBody } from "../../utils/requestDeadline.js";
 // Build a base64 data URI from mime + base64 payload
 export function encodeDataUri(mimeType, base64) {
   return `data:${mimeType};base64,${base64}`;
@@ -75,18 +76,28 @@ function detectImageMime(buf) {
  */
 export async function fetchImageAsBase64(imageUrl, options = {}) {
   const { signal, timeoutMs = FETCH_TIMEOUT_MS, maxBytes = MAX_IMAGE_BYTES } = options;
+  if (signal?.aborted) throw requestAbortReason(signal);
   if (!imageUrl || (!imageUrl.startsWith("http://") && !imageUrl.startsWith("https://"))) {
     return null;
   }
 
   let url;
   try { url = new URL(imageUrl); } catch { return null; }
-  const pinnedIps = await resolvePinnedIps(url.hostname);
+  const pinnedIps = await runWithSignal(signal, () => resolvePinnedIps(url.hostname)).catch((error) => {
+    if (signal?.aborted) throw requestAbortReason(signal);
+    throw error;
+  });
+  if (signal?.aborted) throw requestAbortReason(signal);
   if (!pinnedIps) return null;
 
   const controller = new AbortController();
-  const timeout = signal ? null : setTimeout(() => controller.abort(), timeoutMs);
-  const fetchSignal = signal || controller.signal;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const fetchSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  let reader;
+  const onAbort = () => {
+    try { Promise.resolve(reader?.cancel(fetchSignal.reason)).catch(() => {}); } catch { /* best effort */ }
+  };
+  fetchSignal.addEventListener("abort", onAbort, { once: true });
 
   // Pin connect to the validated IP so no second DNS resolution can rebind (TOCTOU fix).
   const dispatcher = new Agent({
@@ -95,18 +106,18 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
 
   try {
     // redirect:"manual" prevents a public URL redirecting to a private one (SSRF bypass).
-    const response = await fetch(imageUrl, { signal: fetchSignal, redirect: "manual", dispatcher });
-    if (!response.ok || !response.body) return null;
+    const response = await runWithSignal(fetchSignal, () => fetch(imageUrl, { signal: fetchSignal, redirect: "manual", dispatcher }), cancelResponseBody);
+    if (!response.ok || !response.body) { cancelResponseBody(response); return null; }
 
     // Stream-read with a hard byte cap to avoid loading huge payloads into memory.
-    const reader = response.body.getReader();
+    reader = response.body.getReader();
     const chunks = [];
     let total = 0;
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await runWithSignal(fetchSignal, () => reader.read());
       if (done) break;
       total += value.length;
-      if (total > maxBytes) { try { await reader.cancel(); } catch { /* ignore */ } return null; }
+      if (total > maxBytes) { reader.cancel().catch(() => {}); return null; }
       chunks.push(value);
     }
 
@@ -116,9 +127,12 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
 
     return { url: `data:${mimeType};base64,${buf.toString("base64")}`, mimeType };
   } catch {
+    if (signal?.aborted) throw requestAbortReason(signal);
     return null;
   } finally {
-    if (timeout) clearTimeout(timeout);
+    clearTimeout(timeout);
+    fetchSignal.removeEventListener("abort", onAbort);
+    try { reader?.releaseLock(); } catch { /* non-cooperating reader */ }
     dispatcher.close().catch(() => {});
   }
 }
