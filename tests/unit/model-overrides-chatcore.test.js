@@ -42,7 +42,7 @@ function jsonResponse() {
       object: "chat.completion",
       choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop", index: 0 }],
     }), { status: 200, headers: { "content-type": "application/json" } }),
-    url: "https://opencode.ai/zen/go/v1/chat/completions",
+    url: "https://opencode.ai/inference/go/openai/v1/chat/completions",
     headers: {},
     transformedBody: null,
   };
@@ -114,7 +114,7 @@ describe("handleChatCore per-model overrides", () => {
 
     expect(executeMock).toHaveBeenCalledTimes(1);
     const call = executeMock.mock.calls[0][0];
-    expect(credentials.runtimeTransport.baseUrl).toBe("https://opencode.ai/zen/go/v1/chat/completions");
+    expect(credentials.runtimeTransport.baseUrl).toBe("https://opencode.ai/inference/go/openai/v1/chat/completions");
     expect(call.body.reasoning_effort).toBe("max");
     expect(call.body.thinking).toEqual({ type: "enabled" });
     expect(call.body.messages?.length || call.body.input?.length).toBeGreaterThan(0);
@@ -150,7 +150,7 @@ describe("handleChatCore per-model overrides", () => {
 
     expect(executeMock).toHaveBeenCalledTimes(1);
     const call = executeMock.mock.calls[0][0];
-    expect(credentials.runtimeTransport.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
+    expect(credentials.runtimeTransport.baseUrl).toBe("https://opencode.ai/inference/go/openai/v1/responses");
     expect(call.body.input?.length).toBeGreaterThan(0);
     expect(call.body.max_output_tokens).toBe(1024);
     expect(call.body.max_tokens).toBeUndefined();
@@ -186,7 +186,7 @@ describe("handleChatCore per-model overrides", () => {
 
     expect(executeMock).toHaveBeenCalledTimes(1);
     const call = executeMock.mock.calls[0][0];
-    expect(credentials.runtimeTransport.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
+    expect(credentials.runtimeTransport.baseUrl).toBe("https://opencode.ai/inference/go/openai/v1/responses");
     // Regression: reasoning_effort on /responses 400s with unknown parameter.
     expect(call.body.reasoning_effort).toBeUndefined();
     expect(call.body.reasoning).toEqual({ effort: "xhigh", summary: "auto" });

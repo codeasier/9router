@@ -4,16 +4,14 @@ vi.mock("@/models", () => ({ getProxyPoolById: mocks.getProxyPoolById }));
 vi.mock("@/lib/localDb", () => mocks);
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 vi.mock("undici", () => ({
+  fetch: (...args) => mocks.send(...args),
   // Official getDispatcher destructures both Agent (direct/insecure path)
   // and ProxyAgent (proxied path) before choosing.
   Agent: class { constructor() {} },
   ProxyAgent: class { constructor({ uri }) { this.uri = uri; } },
 }));
-// Capture only mocked transport in proxyFetch. No sockets or real tokens.
-const originalFetch = globalThis.fetch;
-globalThis.fetch = mocks.send;
+// Mock the package-owned undici transport; no sockets or real tokens.
 const { proxyAwareFetch, resolveOutboundProxyUrl } = await import("../../open-sse/utils/proxyFetch.js");
-globalThis.fetch = originalFetch;
 const { resolveConnectionProxyConfig } = await import("../../src/lib/network/connectionProxy.js");
 const { getProviderCredentials } = await import("../../src/sse/services/auth.js");
 const activePool = { id: "bound", isActive: true, proxyUrl: "http://pool.test:8080", strictProxy: true };

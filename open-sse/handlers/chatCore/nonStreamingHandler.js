@@ -347,6 +347,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     const sseText = await readResponseBody(providerResponse, requestDeadline);
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) {
+      trackDone(true);
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
     }
@@ -355,6 +356,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       const status = Number.isInteger(upstreamStatus) && upstreamStatus >= 400 && upstreamStatus <= 599
         ? upstreamStatus
         : HTTP_STATUS.BAD_GATEWAY;
+      trackDone(true);
       appendLog({ status: `FAILED ${status}` });
       return createErrorResult(status, parsed.error.message || "Upstream SSE stream failed");
     }
@@ -365,6 +367,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     } catch (err) {
       requestDeadline?.throwIfAborted();
       if (isRequestAbortError(err)) throw err;
+      trackDone(true);
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
       console.error(`[ChatCore] Failed to parse JSON from ${provider}:`, err.message);
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Invalid JSON response from ${provider}`);
