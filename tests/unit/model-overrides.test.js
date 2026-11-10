@@ -105,7 +105,7 @@ describe("resolveChatRouting protocol force", () => {
       sourceFormat: FORMATS.CLAUDE,
     });
     expect(routing.targetFormat).toBe(FORMATS.CLAUDE);
-    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/messages");
+    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/inference/go/anthropic/v1/messages");
   });
 
   it("forces responses on an undeclared custom model even when the client sent chat", () => {
@@ -120,7 +120,7 @@ describe("resolveChatRouting protocol force", () => {
       },
     });
     expect(routing.targetFormat).toBe(FORMATS.OPENAI_RESPONSES);
-    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
+    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/inference/go/openai/v1/responses");
   });
 
   it("routes Muse Spark to responses by default (no override needed)", () => {
@@ -130,7 +130,7 @@ describe("resolveChatRouting protocol force", () => {
       sourceFormat: FORMATS.OPENAI,
     });
     expect(routing.targetFormat).toBe(FORMATS.OPENAI_RESPONSES);
-    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/responses");
+    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/inference/go/openai/v1/responses");
   });
 
   it("forces chat transport even when the client sent messages", () => {    const routing = resolveChatRouting({
@@ -140,7 +140,7 @@ describe("resolveChatRouting protocol force", () => {
       settings: { modelOverrides: { "opencode-go/deepseek-v4-flash": { protocol: "chat", thinking: "max" } } },
     });
     expect(routing.targetFormat).toBe(FORMATS.OPENAI);
-    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/chat/completions");
+    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/inference/go/openai/v1/chat/completions");
     expect(routing.thinkingIntent).toEqual({ mode: "level", level: "max", force: true });
   });
 
@@ -154,7 +154,7 @@ describe("resolveChatRouting protocol force", () => {
     });
     expect(getModelSupportedFormats("opencode-go", "glm-5.2")).toEqual(["openai"]);
     expect(routing.targetFormat).toBe(FORMATS.OPENAI);
-    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/zen/go/v1/chat/completions");
+    expect(routing.useTransport?.baseUrl).toBe("https://opencode.ai/inference/go/openai/v1/chat/completions");
   });
 
   it("ignores protocol force on binary providers", () => {
@@ -196,6 +196,6 @@ describe("protocolOptionsForModel + resolveTransportForFormat", () => {
 
   it("resolves transports by target format", () => {
     expect(resolveTransportForFormat("opencode-go", FORMATS.OPENAI_RESPONSES).baseUrl)
-      .toBe("https://opencode.ai/zen/go/v1/responses");
+      .toBe("https://opencode.ai/inference/go/openai/v1/responses");
   });
 });

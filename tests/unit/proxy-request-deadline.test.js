@@ -2,10 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRequestAbortError } from "../../open-sse/utils/requestDeadline.js";
 
 // No real dispatcher/socket is created; exercise routing and abort classification.
-vi.mock("undici", () => ({ Agent: class Agent {}, ProxyAgent: class ProxyAgent {} }));
+const transport = vi.hoisted(() => ({ fetch: null }));
+vi.mock("undici", () => ({
+  Agent: class Agent {},
+  ProxyAgent: class ProxyAgent {},
+  fetch: (...args) => transport.fetch(...args),
+}));
 const outcome = promise => promise.then(value => ({ value }), error => ({ error }));
 async function load(fetchMock) {
   vi.resetModules();
+  transport.fetch = fetchMock;
   for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) vi.stubEnv(key, "");
   vi.stubGlobal("fetch", fetchMock);
   return (await import("../../open-sse/utils/proxyFetch.js")).proxyAwareFetch;
