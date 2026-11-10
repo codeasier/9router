@@ -129,8 +129,16 @@ describe("undici keep-alive dead-socket protection & fresh-socket retry", () => 
         body: "{}",
         signal: controller.signal,
       })
-    ).rejects.toThrow(/fetch failed/);
+    ).rejects.toBe(controller.signal.reason);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const body = new ReadableStream();
+    const reader = body.getReader();
+    await expect(proxyAwareFetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+      method: "POST", body,
+    })).rejects.toThrow(/fetch failed/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    reader.releaseLock();
   });
 
   it("does not replay on an ambiguous bare fetch failed (request may have been served)", async () => {
@@ -194,7 +202,7 @@ describe("undici keep-alive dead-socket protection & fresh-socket retry", () => 
     expect(fetchMock.mock.calls[0][1].dispatcher).toBe(freshDispatcher);
   });
 
-  it("BaseExecutor.execute sets forceFreshSocket=true when retrying after connect timeout or 502", async () => {
+  it.each(["network", "502"])("BaseExecutor.execute sets forceFreshSocket=true when retrying %s failures", async (failure) => {
     const fetchMock = vi.fn();
     vi.doMock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...args) => fetchMock(...args) }));
 
@@ -205,15 +213,9 @@ describe("undici keep-alive dead-socket protection & fresh-socket retry", () => 
       retry: { 502: { attempts: 2, delayMs: 0 } },
     });
 
-    fetchMock
-      .mockImplementationOnce((_url, opts) => new Promise((_resolve, reject) => {
-        opts.signal.addEventListener("abort", () => {
-          const err = new Error("fetch connect timeout");
-          err.name = "AbortError";
-          reject(err);
-        });
-      }))
-      .mockResolvedValueOnce({ status: 200, headers: { get: () => "application/json" } });
+    if (failure === "network") fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
+    else fetchMock.mockResolvedValueOnce(new Response("bad gateway", { status: 502 }));
+    fetchMock.mockResolvedValueOnce({ status: 200, headers: { get: () => "application/json" } });
 
     const out = await ex.execute({
       model: "deepseek-ai/deepseek-v4-flash",
@@ -226,6 +228,24 @@ describe("undici keep-alive dead-socket protection & fresh-socket retry", () => 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][2]).toBeNull();
     expect(fetchMock.mock.calls[1][2]).toEqual({ forceFreshSocket: true });
+  });
+
+  it("does not replay a response-headers timeout through the executor retry path", async () => {
+    const fetchMock = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    }));
+    vi.doMock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...args) => fetchMock(...args) }));
+    const { BaseExecutor } = await import("../../open-sse/executors/base.js");
+    const ex = new BaseExecutor("nvidia", {
+      baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
+      timeoutMs: 15,
+      retry: { 502: { attempts: 2, delayMs: 0 } },
+    });
+    await expect(ex.execute({
+      model: "deepseek-ai/deepseek-v4-flash", body: { messages: [] },
+      stream: true, credentials: { apiKey: "nvapi-key" },
+    })).rejects.toMatchObject({ code: "UPSTREAM_HEADERS_TIMEOUT" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("DefaultExecutor.transformRequest strips stream_options on non-streaming calls without mutating input body", async () => {

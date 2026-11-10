@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 import { getExecutor } from "../../open-sse/executors/index.js";
 
+vi.mock("../../open-sse/utils/proxyFetch.js", async (importOriginal) => ({
+  ...await importOriginal(),
+  proxyAwareFetch: (...args) => globalThis.fetch(...args),
+}));
+
 const imageModels = ["gpt-image-1.5", "gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"];
 const image = { created: 123, data: [{ b64_json: "aW1hZ2U=" }] };
 const credentials = {
