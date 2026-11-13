@@ -67,7 +67,7 @@ describe("proxy pool probes preserve administrative state", () => {
     // dashboard components. Leaving onConfirm uncalled models Cancel.
     const source = readFileSync(new URL("../../src/app/(dashboard)/dashboard/proxy-pools/page.js", import.meta.url), "utf8");
     const handler = source.split("const handleHealthCheck = async () => {")[1].split("\n  // Cleanup selectedIds")[0];
-    const run = new Function("selectedIds", "proxyPools", "fetch", "setHealthChecking", "setHealthProgress", "fetchProxyPools", "setConfirmState", "setBulkBusy", "notify", `return (async () => {${handler.slice(0, handler.lastIndexOf("};"))}})();`);
+    const run = new Function("selectedIds", "visiblePools", "fetch", "setHealthChecking", "setHealthProgress", "fetchProxyPools", "setConfirmState", "setBulkBusy", "notify", `return (async () => {${handler.slice(0, handler.lastIndexOf("};"))}})();`);
     await run([], [...pools.values()], fetch, vi.fn(), vi.fn(), vi.fn(), value => { confirmation = value; }, vi.fn(), { success: vi.fn() });
     expect(confirmation.title).toBe("Disable Dead Proxies");
     expect(fetch).toHaveBeenCalledTimes(2);
