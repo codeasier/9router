@@ -157,7 +157,6 @@ function resolveFormat(targetFormat, model, provider) {
     if (caps.thinkingFormat === "claude-adaptive") return "gemini-level";
     if (caps.thinkingFormat === "claude-budget") return "gemini-budget";
   }
-  }
   const isOpenAIWire = targetFormat === "openai" || targetFormat === "openai-responses";
   if (caps.thinkingFormat && !(isOpenAIWire && NATIVE_ONLY_FORMATS.has(caps.thinkingFormat))) {
     return caps.thinkingFormat;
