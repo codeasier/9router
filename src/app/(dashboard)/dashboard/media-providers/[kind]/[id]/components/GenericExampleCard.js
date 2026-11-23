@@ -152,16 +152,6 @@ export function GenericExampleCard({ providerId, kind }) {
       },
     }
   ) : {};
-      },
-    } : {
-      questions: {
-        is_urgent: {
-          type: "noul",
-          instructions: question.trim() || "Does this request require urgent attention?",
-        },
-      },
-    }
-  ) : {};
   const requestBody = {
     model: modelFull,
     [exConfig.bodyKey]: input,

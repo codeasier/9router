@@ -8,7 +8,6 @@ import { resolveSessionId, toNumericSessionId } from "../utils/sessionManager.js
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { cleanJSONSchemaForAntigravity, normalizeGeminiContents } from "../translator/formats/gemini.js";
 import { normalizeGeminiToolCallIds } from "../translator/concerns/geminiToolCall.js";
-import { GEMINI_ROLE } from "../translator/schema/roles.js";
 import { DEFAULT_THINKING_AG_SIGNATURE } from "../config/defaultThinkingSignature.js";
 import { getGeminiThoughtSignatureSync } from "../services/thoughtSignatureStore.js";
 import { GEMINI_LONG_DECODE_MAX_OUTPUT, supportsGeminiLongDecode, wantsGeminiLongDecode, withGeminiLongDecode } from "../utils/geminiLongDecode.js";
