@@ -21,6 +21,7 @@ import { FORMATS } from "../../open-sse/translator/formats.js";
 import { AntigravityExecutor } from "../../open-sse/executors/antigravity.js";
 import * as signatureStore from "../../open-sse/services/thoughtSignatureStore.js";
 import { DEFAULT_THINKING_AG_SIGNATURE } from "../../open-sse/config/defaultThinkingSignature.js";
+import { ANTIGRAVITY_DEFAULT_SYSTEM } from "../../open-sse/config/appConstants.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -110,7 +111,9 @@ describe("Gemini → Antigravity native payload preservation", () => {
     expect(translated.request.tools).toBe(body.tools);
     const out = new AntigravityExecutor().transformRequest(model, translated, stream, credentials);
     expect(out.request.contents).toEqual(payload.contents);
-    expect(out.request.systemInstruction).toEqual(payload.systemInstruction);
+    // Official v0.5.123 leads generation requests with the Antigravity identity
+    // prompt when the client's system instruction does not carry it (fake-429 guard).
+    expect(out.request.systemInstruction).toEqual({ ...payload.systemInstruction, parts: [{ text: ANTIGRAVITY_DEFAULT_SYSTEM }, ...payload.systemInstruction.parts] });
     expect(out.request.generationConfig).toEqual({ ...payload.generationConfig, maxOutputTokens: 64000 });
     expect(out.request.tools[0].functionDeclarations[0].behavior).toBe("NON_BLOCKING");
     expect(out.request).toMatchObject({ cachedContent: payload.cachedContent, labels: payload.labels, sessionId: "1234567890", toolConfig: { functionCallingConfig: { mode: "VALIDATED" } } });
@@ -179,7 +182,8 @@ describe("Gemini → Antigravity native payload preservation", () => {
     };
     const before = structuredClone(body);
     const out = new AntigravityExecutor().transformRequest(body.model, body, false, { projectId: "synthetic-project" });
-    expect(out.request.systemInstruction).toEqual({ ...before.request.systemInstruction, parts: [{ text: "Antigravity and antigravity", metadata: { index: 0 } }, before.request.systemInstruction.parts[1]] });
+    // Official v0.5.123 prepends the Antigravity identity when absent (fake-429 guard).
+    expect(out.request.systemInstruction).toEqual({ ...before.request.systemInstruction, parts: [{ text: ANTIGRAVITY_DEFAULT_SYSTEM }, { text: "Antigravity and antigravity", metadata: { index: 0 } }, before.request.systemInstruction.parts[1]] });
     expect(out.request.generationConfig).toEqual({ temperature: 0, maxOutputTokens: 64000 });
     expect(out).not.toHaveProperty("stream_options");
     expect(out).not.toHaveProperty("stream");
@@ -287,11 +291,13 @@ describe("Antigravity optional roles and Google-wire thinking", () => {
   });
 
   it.each([
-    { name: "gateway level overrides native budget", model: "claude-sonnet-4-6", force: { mode: "level", level: "high", force: true }, expected: { thinkingBudget: 24576, includeThoughts: true } },
-    { name: "model suffix overrides native budget", model: "claude-opus-4-6-thinking(high)", expected: { thinkingBudget: 24576, includeThoughts: true } },
-    { name: "gateway budget beats a model suffix", model: "claude-sonnet-4-6(high)", force: { mode: "budget", budget: 4096, force: true }, expected: { thinkingBudget: 4096, includeThoughts: true } },
-    { name: "numeric suffix beats unforced intent", model: "claude-opus-4-6-thinking(8192)", force: { mode: "budget", budget: 4096 }, expected: { thinkingBudget: 8192, includeThoughts: true } },
-    { name: "gateway off beats a model suffix", model: "claude-sonnet-4-6(high)", force: { mode: "none", force: true }, expected: { thinkingBudget: 0, includeThoughts: false } },
+      { name: "gateway level overrides native budget", model: "claude-sonnet-4-6", force: { mode: "level", level: "high", force: true }, expected: { thinkingLevel: "high", includeThoughts: true } },
+      { name: "model suffix overrides native budget", model: "claude-opus-4-6-thinking(high)", expected: { thinkingBudget: 24576, includeThoughts: true } },
+      // claude-sonnet-4-6 is claude-adaptive since official v0.5.123: the antigravity
+      // wire takes gemini-level thinking, so budgets and off convert to levels.
+      { name: "gateway budget beats a model suffix", model: "claude-sonnet-4-6(high)", force: { mode: "budget", budget: 4096, force: true }, expected: { thinkingLevel: "low", includeThoughts: true } },
+      { name: "numeric suffix beats unforced intent", model: "claude-opus-4-6-thinking(8192)", force: { mode: "budget", budget: 4096 }, expected: { thinkingBudget: 8192, includeThoughts: true } },
+      { name: "gateway off beats a model suffix", model: "claude-sonnet-4-6(high)", force: { mode: "none", force: true }, expected: { thinkingLevel: "low", includeThoughts: true } },
     { name: "Gemini level caps keep their Google level mapping", model: "gemini-3.8-flash", force: { mode: "level", level: "high", force: true }, expected: { thinkingLevel: "high", includeThoughts: true } },
     { name: "Gemini budget caps still clamp overrides", model: "gemini-2.5-flash", force: { mode: "budget", budget: 999999, force: true }, expected: { thinkingBudget: 24576, includeThoughts: true } },
   ])("emits Google thinking fields when $name", ({ model, force, expected }) => {

@@ -102,6 +102,10 @@ describe("GET /v1/models combo-only catalog (#17)", () => {
   });
 
   it("keeps GET /v1/models/{kind} expansion available via buildModelsList without combosOnly", async () => {
+    // Official v0.5.123 probes the no-auth OpenCode free-model catalog during expansion
+    // (fail-open). Return an empty catalog so the static list is used, and assert the
+    // probe is the only network call — no per-connection upstream /models fetch.
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) }));
     const models = await buildModelsList(["llm"]);
     const ids = models.map((model) => model.id);
 
@@ -110,6 +114,7 @@ describe("GET /v1/models combo-only catalog (#17)", () => {
     expect(ids).toContain("if/glm-4.7");
     expect(ids).not.toContain("imagine");
     expect(dbMocks.getProviderConnections).toHaveBeenCalled();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledWith("https://opencode.ai/zen/v1/models", expect.anything());
   });
 });
