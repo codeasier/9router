@@ -7,19 +7,26 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 // Providers using the dynamic-port local callback proxy.
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
-const PROXY_OAUTH_PROVIDERS = new Set(["trae", "windsurf", "zed"]);
+const PROXY_OAUTH_PROVIDERS = new Set(["trae", "trae-global", "trae-enterprise", "windsurf", "zed"]);
+const TRAE_OAUTH_PROVIDERS = new Set(["trae", "trae-global", "trae-enterprise"]);
+
+function traePaste(site) {
+  return {
+    label: "Cloud-IDE-JWT",
+    instructions:
+      `Browser sign-in does not need Trae installed on this machine. To paste a token instead, copy the Cloud-IDE-JWT from a ${site} request's Authorization header (~14-day lifetime).`,
+    placeholder: "Paste Cloud-IDE-JWT here...",
+    ideName: "Trae",
+    ideOptional: true,
+  };
+}
 
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
 const PASTE_TOKEN_PROVIDERS = {
-  trae: {
-    label: "Cloud-IDE-JWT",
-    instructions:
-      "Sign in at trae.ai (or solo.trae.ai), open DevTools → Network, copy the Cloud-IDE-JWT token from any request's Authorization header (~14-day lifetime).",
-    placeholder: "Paste Cloud-IDE-JWT here...",
-    ideName: "Trae",
-    ideOptional: true, // token can be grabbed from DevTools without the IDE
-  },
+  trae: traePaste("www.trae.cn"),
+  "trae-global": traePaste("www.trae.ai"),
+  "trae-enterprise": traePaste("www.trae.cn"),
   windsurf: {
     label: "Windsurf API key",
     instructions:
@@ -753,6 +760,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   if (!provider || !providerInfo) return null;
   const isXaiProvider = provider === "xai";
   const isKimchiProvider = provider === "kimchi";
+  const isTraeProvider = TRAE_OAUTH_PROVIDERS.has(provider);
+  const traeCallbackPlaceholder = provider === "trae-global"
+    ? "http://127.0.0.1:12345/callback?refreshToken=..."
+    : "http://127.0.0.1:12345/authorize?refreshToken=...";
   const deviceLoginUrl = deviceData?.verification_uri_complete || deviceData?.verification_uri || "";
   const modalTitle = isXaiProvider ? "Connect Grok Build OAuth" : `Connect ${providerInfo.name}`;
   const manualPlaceholder = isXaiProvider
@@ -786,7 +797,48 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
               </div>
             )}
 
-            {authMode === "browser" && (
+            {authMode === "browser" && isTraeProvider && (
+              <div className="space-y-3">
+                {step === "waiting" && (
+                  <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">
+                    <span className="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
+                    <span className="text-sm">Waiting for browser authorization…</span>
+                  </div>
+                )}
+                <div>
+                  <p className="text-sm font-medium mb-2">Step 1: Open this URL and sign in</p>
+                  <div className="flex gap-2">
+                    <Input value={authData?.authUrl || ""} readOnly className="flex-1 font-mono text-xs" />
+                    <Button variant="secondary" icon={copied === "auth_url" ? "check" : "content_copy"} onClick={() => copy(authData?.authUrl, "auth_url")} disabled={!authData?.authUrl}>
+                      Copy
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-px bg-border" />
+                  <span className="text-xs text-text-muted uppercase tracking-wider">Or paste callback URL</span>
+                  <div className="flex-1 h-px bg-border" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium mb-2">Step 2: Paste the callback URL</p>
+                  <p className="text-xs text-text-muted mb-2">
+                    After Trae redirects, copy the full 127.0.0.1 address from the browser. The refresh token is in that link.
+                  </p>
+                  <Input
+                    value={callbackUrl}
+                    onChange={(e) => setCallbackUrl(e.target.value)}
+                    placeholder={traeCallbackPlaceholder}
+                    className="font-mono text-xs"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={handleManualSubmit} fullWidth disabled={!callbackUrl}>Connect</Button>
+                  <Button onClick={handleClose} variant="ghost" fullWidth>Cancel</Button>
+                </div>
+              </div>
+            )}
+
+            {authMode === "browser" && !isTraeProvider && (
               <>
                 {step === "waiting" && (
                   <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">

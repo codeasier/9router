@@ -1048,6 +1048,18 @@
     "format": "openai",
     "tokenUrl": "https://www.codebuddy.ai/v2/plugin/auth/token"
   },
+  "trae": {
+    "baseUrl": "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
+    "format": "openai",
+    "auth": {
+      "combined": true,
+      "header": "Authorization",
+      "scheme": "Cloud-IDE-JWT"
+    },
+    "clientId": "ono9krqynydwx5",
+    "clientSecret": "-",
+    "tokenUrl": "https://api.marscode.com/cloudide/api/v3/trae/oauth/ExchangeToken"
+  },
   "zed": {
     "baseUrl": "https://cloud.zed.dev/completions",
     "format": "openai",
@@ -1479,6 +1491,30 @@
         }
       }
     ]
+  },
+  "trae-global": {
+    "baseUrl": "https://coresg-normal.trae.ai/api/agent/v3/llm_utils_chat",
+    "format": "openai",
+    "auth": {
+      "combined": true,
+      "header": "Authorization",
+      "scheme": "Cloud-IDE-JWT"
+    },
+    "clientId": "ono9krqynydwx5",
+    "clientSecret": "-",
+    "tokenUrl": "https://api.marscode.com/cloudide/api/v3/trae/oauth/ExchangeToken"
+  },
+  "trae-enterprise": {
+    "baseUrl": "https://console.enterprise.trae.cn/api/agent/v3/llm_utils_chat",
+    "format": "openai",
+    "auth": {
+      "combined": true,
+      "header": "Authorization",
+      "scheme": "Cloud-IDE-JWT"
+    },
+    "clientId": "ono9krqynydwx5",
+    "clientSecret": "-",
+    "tokenUrl": "https://api.marscode.com/cloudide/api/v3/trae/oauth/ExchangeToken"
   },
   "volceapi": {
     "baseUrl": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1/chat/completions",

@@ -103,9 +103,8 @@ import p97 from "./xiaomi-tokenplan.js";
 import p98 from "./youcom.js";
 import p99 from "./alims-intl.js";
 import p100 from "./codebuddy-intl.js";
-// Temporarily hidden — no tool calling support (trae SOLO agent / windsurf gRPC skip ToolCallChunk).
-// Re-enable by uncommenting both the import and the array entry below.
-// import p102 from "./trae.js";
+// Windsurf stays hidden: its gRPC executor skips ToolCallChunk.
+import p102 from "./trae.js";
 import p103 from "./zed.js";
 import p105 from "./api-airforce.js";
 import p106 from "./baidu.js";
@@ -152,6 +151,8 @@ import p155 from "./synthetic.js";
 import p156 from "./opendesign-go.js";
 import p157 from "./deeprelay.js";
 import p158 from "./qwencloud.js";
+import p159 from "./trae-global.js";
+import p160 from "./trae-enterprise.js";
 import volceapi from "./volceapi.js";
 import stepPlan from "./step-plan.js";
 export default [
@@ -259,7 +260,7 @@ export default [
   p98,
   p99,
   p100,
-  // p102, // trae — hidden, no tool calling
+  p102,
   p103,
   p105,
   p106,
@@ -306,6 +307,8 @@ export default [
   p156,
   p157,
   p158,
+  p159,
+  p160,
   volceapi,
   stepPlan,
 ];

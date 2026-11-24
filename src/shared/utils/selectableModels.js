@@ -40,7 +40,7 @@ export const NO_AUTH_PROVIDER_IDS = Object.keys(AI_PROVIDERS)
 // Providers with per-account live catalogs via /api/providers/[id]/models.
 // Single source of truth: ModelSelectModal and the CLI-tool cards import this, so a
 // provider supported by that route cannot be missing from just one picker.
-export const LIVE_CATALOG_PROVIDERS = ["cursor", "cline", "clinepass", "zed", "claude", "commandcode"];
+export const LIVE_CATALOG_PROVIDERS = ["cursor", "cline", "clinepass", "zed", "claude", "commandcode", "trae", "trae-global", "trae-enterprise"];
 
 /**
  * Capabilities carried by a live catalog row, when the provider reports any.

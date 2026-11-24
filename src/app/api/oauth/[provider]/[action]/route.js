@@ -7,6 +7,7 @@ import {
   requestDeviceCode,
   pollForToken
 } from "@/lib/oauth/providers";
+import { isTraeOAuthProvider } from "@/lib/oauth/constants/oauth.js";
 import { createProviderConnection } from "@/models";
 import { getProviderConnections } from "@/lib/localDb";
 import { requestLease, requestStatus, resolveLeaseEndpoint, resolveMcodeDataDir, AuthLeaseError } from "open-sse/services/minimaxCodeLease.js";
@@ -141,8 +142,8 @@ export async function GET(request, { params }) {
     if (action === "start-proxy") {
       // Trae/Windsurf/Zed use a dynamic-port local callback server (singleton session,
       // state is registered separately via /register-session after /authorize).
-      if (provider === "trae") {
-        const result = await startTraeProxy();
+      if (isTraeOAuthProvider(provider)) {
+        const result = await startTraeProxy(provider);
         return NextResponse.json(result);
       }
       if (provider === "windsurf") {
@@ -187,7 +188,7 @@ export async function GET(request, { params }) {
         return NextResponse.json({ error: "Missing state" }, { status: 400 });
       }
       let session;
-      if (provider === "trae") session = getTraeSessionStatus(state);
+      if (isTraeOAuthProvider(provider)) session = getTraeSessionStatus(state, provider);
       else if (provider === "windsurf") session = getWindsurfSessionStatus(state);
       else if (provider === "zed") session = getZedSessionStatus(state);
       else if (provider === "xai") session = getXaiSessionStatus(state);
@@ -207,7 +208,7 @@ export async function GET(request, { params }) {
           }
           return NextResponse.json(payload);
         }
-        if (provider === "trae") clearTraeSession(state);
+        if (isTraeOAuthProvider(provider)) clearTraeSession(state, provider);
         else if (provider === "windsurf") clearWindsurfSession(state);
         else if (provider === "zed") clearZedSession(state);
         else if (provider === "xai") clearXaiSession(state);
@@ -218,7 +219,7 @@ export async function GET(request, { params }) {
     }
 
     if (action === "stop-proxy") {
-      if (provider === "trae") stopTraeProxy();
+      if (isTraeOAuthProvider(provider)) stopTraeProxy(provider);
       else if (provider === "windsurf") stopWindsurfProxy();
       else if (provider === "zed") stopZedProxy();
       else if (provider === "xai") stopXaiProxy();
@@ -230,7 +231,11 @@ export async function GET(request, { params }) {
 
     if (action === "ide-status") {
       // Detect whether the IDE is installed locally (used by import-token UX).
-      if (provider !== "trae" && provider !== "windsurf") {
+      if (isTraeOAuthProvider(provider)) {
+        const status = await detectIdeInstalled("trae");
+        return NextResponse.json(status);
+      }
+      if (provider !== "windsurf") {
         return NextResponse.json({ error: "ide-status only supported for trae/windsurf" }, { status: 400 });
       }
       const status = await detectIdeInstalled(provider);
@@ -367,7 +372,7 @@ export async function POST(request, { params }) {
       const state = searchParams.get("state") || body?.state;
       if (!state) return NextResponse.json({ error: "Missing state" }, { status: 400 });
       let ok = false;
-      if (provider === "trae") ok = registerTraeSession({ state });
+      if (isTraeOAuthProvider(provider)) ok = registerTraeSession({ state, provider });
       else if (provider === "windsurf") ok = registerWindsurfSession({ state });
       else if (provider === "zed") ok = registerZedSession({ state, codeVerifier: body?.codeVerifier, systemId: body?.systemId });
       else return NextResponse.json({ error: "register-session only supported for trae/windsurf/zed" }, { status: 400 });
@@ -441,7 +446,7 @@ export async function POST(request, { params }) {
 
       // Trae/Windsurf: code is either a raw callback URL or a pasted token.
       // exchangeTokens() handles both paths; no PKCE, skip codex JWT extraction.
-      if (provider === "trae" || provider === "windsurf") {
+      if (isTraeOAuthProvider(provider) || provider === "windsurf") {
         const token = typeof code === "string" ? code.trim() : "";
         if (!token) {
           return NextResponse.json({ error: "Missing token or callback URL" }, { status: 400 });

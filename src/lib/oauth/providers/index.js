@@ -25,7 +25,7 @@ import gitlab from "./gitlab.js";
 import codebuddyCn from "./codebuddy-cn.js";
 import codebuddyIntl from "./codebuddy-intl.js";
 import kimchi from "./kimchi.js";
-import trae from "./trae.js";
+import trae, { traeEnterprise, traeGlobal } from "./trae.js";
 import windsurf from "./windsurf.js";
 import zed from "./zed.js";
 import glm from "./glm.js";
@@ -57,6 +57,8 @@ const PROVIDERS = {
   "codebuddy-intl": codebuddyIntl,
   kimchi,
   trae,
+  "trae-global": traeGlobal,
+  "trae-enterprise": traeEnterprise,
   windsurf,
   zed,
   glm,

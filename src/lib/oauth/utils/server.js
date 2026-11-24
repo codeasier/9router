@@ -1,6 +1,6 @@
 import http from "http";
 import { URL } from "url";
-import { CODEX_CONFIG, TRAE_CONFIG, WINDSURF_CONFIG, ZED_HOSTED_CONFIG } from "../constants/oauth.js";
+import { CODEX_CONFIG, TRAE_CONFIG, WINDSURF_CONFIG, ZED_HOSTED_CONFIG, traeOAuthCallbackPath } from "../constants/oauth.js";
 
 // Loopback origin guard for local callback proxies.
 // Legit OAuth redirects are top-level navigations (no `Origin` header); a cross-site
@@ -435,43 +435,54 @@ export function stopXaiProxy() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Trae dynamic-port proxy. Singleton session (one connect at a time per provider).
-// Callback path = /callback with params refreshToken + loginHost.
+// Trae dynamic-port proxy. One listener per provider id (CN / international /
+// enterprise), so connecting one does not clobber another. The callback saves
+// the connection under the provider that opened the listener.
+// CN opens www.trae.cn and must call back at /authorize. International keeps /callback.
+// Callback path = /authorize or /callback, with params refreshToken + loginHost.
 // ───────────────────────────────────────────────────────────────────────────
 
-let traeProxyServer = null;
-let traeProxyTimeout = null;
-let traeProxyPort = null;
-let traeSession = null;
+const traeSlots = new Map();
 
-export function registerTraeSession({ state }) {
+function traeSlot(provider = "trae") {
+  if (!traeSlots.has(provider)) {
+    traeSlots.set(provider, { server: null, timeout: null, port: null, session: null });
+  }
+  return traeSlots.get(provider);
+}
+
+export function registerTraeSession({ state, provider = "trae" }) {
   if (!state) return false;
-  traeSession = { state, status: "pending", createdAt: Date.now() };
+  traeSlot(provider).session = { state, status: "pending", provider, createdAt: Date.now() };
   return true;
 }
-export function getTraeSessionStatus(state) {
-  if (!traeSession) return null;
-  if (state && traeSession.state !== state) return null;
-  return traeSession;
+export function getTraeSessionStatus(state, provider = "trae") {
+  const session = traeSlot(provider).session;
+  if (!session) return null;
+  if (state && session.state !== state) return null;
+  return session;
 }
-export function clearTraeSession(state) {
-  if (!state || (traeSession && traeSession.state === state)) traeSession = null;
+export function clearTraeSession(state, provider = "trae") {
+  const slot = traeSlot(provider);
+  if (!state || (slot.session && slot.session.state === state)) slot.session = null;
 }
 
-export function startTraeProxy() {
+export function startTraeProxy(provider = "trae") {
   return new Promise((resolve) => {
-    if (traeProxyServer) {
-      resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${TRAE_CONFIG.callbackPath}` });
+    const slot = traeSlot(provider);
+    const callbackPath = traeOAuthCallbackPath(provider);
+    if (slot.server) {
+      resolve({ success: true, port: slot.port, callbackUrl: `http://127.0.0.1:${slot.port}${callbackPath}` });
       return;
     }
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
-      if (url.pathname !== TRAE_CONFIG.callbackPath && url.pathname !== "/auth/callback") {
+      if (url.pathname !== "/authorize" && url.pathname !== TRAE_CONFIG.callbackPath && url.pathname !== "/auth/callback") {
         res.writeHead(404);
         res.end("Not found");
         return;
       }
-      const session = traeSession;
+      const session = slot.session;
       if (!session) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(false, "No active Trae login session"));
@@ -490,17 +501,18 @@ export function startTraeProxy() {
         session.error = "Trae callback state mismatch";
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(false, session.error));
-        stopTraeProxy();
+        stopTraeProxy(provider);
         return;
       }
-      // Pass the raw callback query to exchangeTokens → parseTraeCallback
+      // Pass the raw callback query to exchangeTokens → parseTraeCallback.
+      // Provider id comes from the listener, not from the callback query.
       const rawCallback = `${url.pathname}?${url.searchParams.toString()}`;
       try {
         const { exchangeTokens } = await import("../providers.js");
         const { createProviderConnection } = await import("@/models");
-        const tokenData = await exchangeTokens("trae", rawCallback);
+        const tokenData = await exchangeTokens(provider, rawCallback);
         const connection = await createProviderConnection({
-          provider: "trae",
+          provider,
           authType: "oauth",
           ...tokenData,
           expiresAt: tokenData.expiresIn
@@ -519,23 +531,24 @@ export function startTraeProxy() {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(false, err.message));
       } finally {
-        stopTraeProxy();
+        stopTraeProxy(provider);
       }
     });
     server.listen(0, "127.0.0.1", () => {
-      traeProxyServer = server;
-      traeProxyPort = server.address().port;
-      traeProxyTimeout = setTimeout(() => stopTraeProxy(), TRAE_CONFIG.oauthTimeoutMs);
-      resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${TRAE_CONFIG.callbackPath}` });
+      slot.server = server;
+      slot.port = server.address().port;
+      slot.timeout = setTimeout(() => stopTraeProxy(provider), TRAE_CONFIG.oauthTimeoutMs);
+      resolve({ success: true, port: slot.port, callbackUrl: `http://127.0.0.1:${slot.port}${callbackPath}` });
     });
     server.on("error", (err) => resolve({ success: false, reason: err.message }));
   });
 }
 
-export function stopTraeProxy() {
-  if (traeProxyTimeout) { clearTimeout(traeProxyTimeout); traeProxyTimeout = null; }
-  if (traeProxyServer) { traeProxyServer.close(); traeProxyServer = null; }
-  traeProxyPort = null;
+export function stopTraeProxy(provider = "trae") {
+  const slot = traeSlot(provider);
+  if (slot.timeout) { clearTimeout(slot.timeout); slot.timeout = null; }
+  if (slot.server) { slot.server.close(); slot.server = null; }
+  slot.port = null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

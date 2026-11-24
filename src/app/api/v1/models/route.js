@@ -19,6 +19,7 @@ import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { resolveCommandCodeModels } from "open-sse/services/commandcodeModels.js";
+import { resolveTraeModels } from "open-sse/services/traeSolo.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig, toCredentialProxyFields } from "@/lib/network/connectionProxy";
 import { LLM_KIND, comboMatchesKinds } from "@/sse/services/modelAllowlist";
@@ -71,7 +72,21 @@ function comboSeatCapabilities(seat) {
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
 // Adding a provider here makes /v1/models prefer the live catalog for it.
+async function resolveTraeLiveModels(conn) {
+  const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
+  const models = await resolveTraeModels(conn, {
+    proxyOptions: {
+      enabled: proxy.connectionProxyEnabled === true,
+      ...toCredentialProxyFields(proxy),
+    },
+  });
+  return models.length ? { models } : null;
+}
+
 const LIVE_MODEL_RESOLVERS = {
+  trae: resolveTraeLiveModels,
+  "trae-global": resolveTraeLiveModels,
+  "trae-enterprise": resolveTraeLiveModels,
   opencode: async (conn) => {
     try {
       const res = await fetch("https://opencode.ai/zen/v1/models", {

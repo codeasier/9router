@@ -617,9 +617,9 @@ export async function refreshCodebuddyIntlToken(refreshToken, log) {
 
 // Trae refresh — POST ExchangeToken with JSON body {ClientID, RefreshToken, ClientSecret, UserID}.
 // Response: {Result: {AccessToken, RefreshToken, TokenType, ExpiresAt}}.
-export async function refreshTraeToken(refreshToken, credentials, log) {
+export async function refreshTraeToken(refreshToken, credentials, log, providerId = "trae") {
   if (!refreshToken) return null;
-  const oauth = PROVIDER_OAUTH.trae || {};
+  const oauth = PROVIDER_OAUTH[providerId] || PROVIDER_OAUTH.trae || {};
   const url = oauth.exchangeTokenUrl || oauth.tokenUrl;
   if (!url) {
     log?.warn?.("TOKEN_REFRESH", "No Trae exchangeTokenUrl configured");

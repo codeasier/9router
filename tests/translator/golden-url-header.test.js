@@ -21,6 +21,7 @@ const SPECIALIZED = new Set([
   "codex", "cursor", "vertex", "vertex-partner", "opencode",
   "opencode-go", "volceapi", "grok-web", "perplexity-web", "ollama-local", "commandcode",
   "xiaomi-tokenplan", "mimo-free",
+  "trae", "trae-global", "trae-enterprise",
 ]);
 
 // Per-process / per-request values: kimi's random device name, minimax's session UUID.

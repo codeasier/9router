@@ -152,6 +152,9 @@ export default function ModelSelectModal({
   const zedConnectionIds = liveConnectionIdsByProvider.zed;
   const claudeConnectionIds = liveConnectionIdsByProvider.claude;
   const commandcodeConnectionIds = liveConnectionIdsByProvider.commandcode;
+  const traeConnectionIds = liveConnectionIdsByProvider.trae;
+  const traeGlobalConnectionIds = liveConnectionIdsByProvider["trae-global"];
+  const traeEnterpriseConnectionIds = liveConnectionIdsByProvider["trae-enterprise"];
 
   const cursorModels = useLiveProviderModels(isOpen, cursorConnectionIds, "Cursor");
   const clineModels = useLiveProviderModels(isOpen, clineConnectionIds, "Cline");
@@ -159,6 +162,9 @@ export default function ModelSelectModal({
   const zedModels = useLiveProviderModels(isOpen, zedConnectionIds, "Zed");
   const claudeModels = useLiveProviderModels(isOpen, claudeConnectionIds, "Claude");
   const commandcodeModels = useLiveProviderModels(isOpen, commandcodeConnectionIds, "CommandCode");
+  const traeModels = useLiveProviderModels(isOpen, traeConnectionIds, "Trae");
+  const traeGlobalModels = useLiveProviderModels(isOpen, traeGlobalConnectionIds, "Trae (Global)");
+  const traeEnterpriseModels = useLiveProviderModels(isOpen, traeEnterpriseConnectionIds, "Trae (Enterprise)");
 
 
   const fetchCombos = async () => {
@@ -236,6 +242,9 @@ export default function ModelSelectModal({
       zed: zedModels,
       claude: claudeModels,
       commandcode: commandcodeModels,
+      trae: traeModels,
+      "trae-global": traeGlobalModels,
+      "trae-enterprise": traeEnterpriseModels,
     };
 
     // Kinds where the provider IS the model (no per-model selection needed)
@@ -345,12 +354,15 @@ export default function ModelSelectModal({
             if (supports) combined = [{ id: providerId, name: providerInfo.name, value: alias }];
           }
         } else {
-          // LLM/null kind: merge hardcoded models (e.g. mimo-free → mimo-auto) with user-added models
+          // LLM/null kind: a live account directory replaces the static seed.
+          // User-added models stay either way. An empty live fetch keeps the seed.
+          const liveModels = liveModelsByProvider[providerId] || [];
           const registeredLlms = customRegisteredModels.filter((m) => !getModelKind(m) || getModelKind(m) === "llm");
           const seen = new Set([...aliasModels, ...registeredLlms].map((m) => m.value));
-          const hardcoded = getModelsByProviderId(providerId)
+          const sourceModels = liveModels.length > 0 ? liveModels : getModelsByProviderId(providerId);
+          const hardcoded = sourceModels
             .filter((m) => !getModelKind(m) || getModelKind(m) === "llm")
-            .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) }))
+            .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m), caps: liveModelCaps(m) }))
             .filter((m) => !seen.has(m.value));
           combined = [...registeredLlms, ...aliasModels.filter((m) => !registeredLlms.some((registered) => registered.value === m.value)), ...hardcoded];
         }
@@ -511,7 +523,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels, claudeModels, commandcodeModels]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels, claudeModels, commandcodeModels, traeModels, traeGlobalModels, traeEnterpriseModels]);
 
   // Parse search query into structured query (regex, positive tokens, negative tokens)
   const parsedQuery = useMemo(() => parseSearchQuery(searchQuery), [searchQuery]);
