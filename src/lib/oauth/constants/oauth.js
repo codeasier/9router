@@ -131,7 +131,10 @@ export const GROK_CLI_CONFIG = { ...PROVIDER_OAUTH["grok-cli"] };
 // (Meta rejects refresh_token grants; the minted Model API key never expires).
 export const MUSE_CONFIG = { ...PROVIDER_OAUTH["muse"] };
 
-// Trae (ByteDance marscode) OAuth — authorization_code flow with local callback.
+// Trae OAuth — authorization_code flow with local callback.
+// CN (trae, trae-enterprise) asks api.trae.cn and opens www.trae.cn.
+// International asks api.trae.ai and opens www.trae.ai.
+// api.marscode.com also answers, but its LoginHost is www.trae.ai, so CN must not use it.
 //   1) POST GetLoginGuidance {loginTraceID} → {Result.LoginHost}
 //   2) Browser opens ${loginHost}/authorization?client_id=...&login_trace_id=...&auth_callback_url=${cb}
 //   3) Redirect → ${cb}?refreshToken=...&loginHost=...&isRedirect=true
@@ -155,16 +158,16 @@ export const XIAOMI_MIMO_CONFIG = {
 export const TRAE_CONFIG = {
   clientId: "ono9krqynydwx5",
   clientSecret: "-",
+  // Historical international endpoints. Provider login uses the lists in
+  // src/lib/oauth/providers/trae.js so CN is not sent to www.trae.ai.
   loginGuidanceUrls: [
-    "https://api.marscode.com/cloudide/api/v3/trae/GetLoginGuidance",
     "https://api.trae.ai/cloudide/api/v3/trae/GetLoginGuidance",
     "https://www.trae.ai/cloudide/api/v3/trae/GetLoginGuidance",
   ],
   apiOrigins: [
-    "https://api.marscode.com",
     "https://api.trae.ai",
+    "https://api.marscode.com",
     "https://www.trae.ai",
-    "https://www.marscode.com",
   ],
   exchangeTokenPath: "/cloudide/api/v3/trae/oauth/ExchangeToken",
   getUserInfoPath: "/cloudide/api/v3/trae/GetUserInfo",
@@ -182,6 +185,20 @@ export const TRAE_CONFIG = {
   tokenLifetimeDays: 14,
   oauthTimeoutMs: 600_000,
 };
+
+export const TRAE_OAUTH_PROVIDER_IDS = Object.freeze(["trae", "trae-global", "trae-enterprise"]);
+
+export function isTraeOAuthProvider(provider) {
+  return TRAE_OAUTH_PROVIDER_IDS.includes(provider);
+}
+
+// www.trae.cn rejects any auth_callback_url that is not exactly
+// http://127.0.0.1:<port>/authorize and shows a generic network error.
+// www.trae.ai still receives the historical /callback path.
+export function traeOAuthCallbackPath(provider) {
+  if (provider === "trae" || provider === "trae-enterprise") return "/authorize";
+  return "/callback";
+}
 
 // Windsurf / Devin CLI OAuth — authorization_code (implicit) flow with local callback.
 //   1) Browser opens windsurf.com/windsurf/signin?response_type=token&client_id=...&redirect_uri=${cb}
@@ -262,6 +279,8 @@ export const PROVIDERS = {
   KIMCHI: "kimchi",
   GROK_CLI: "grok-cli",
   TRAE: "trae",
+  TRAE_GLOBAL: "trae-global",
+  TRAE_ENTERPRISE: "trae-enterprise",
   WINDSURF: "windsurf",
   GLM: "glm",
   ZED: "zed",

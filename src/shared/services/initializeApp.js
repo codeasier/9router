@@ -123,6 +123,10 @@ async function runHeavyStartup() {
   import("@/sse/services/backgroundTokenRefresh.js")
     .then(({ startBackgroundTokenRefresh }) => startBackgroundTokenRefresh())
     .catch((e) => console.log("[BackgroundTokenRefresh] scheduler start failed:", e.message));
+
+  import("@/shared/services/traeAutoCheckin.js")
+    .then(({ startTraeAutoCheckin }) => startTraeAutoCheckin())
+    .catch((e) => console.log("[Trae Check-in] scheduler start failed:", e.message));
 }
 
 // Cheap local check: keeps the scheduler module (and its provider graph) unloaded

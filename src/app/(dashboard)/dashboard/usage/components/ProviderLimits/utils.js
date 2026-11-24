@@ -1011,6 +1011,22 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "trae":
+        // CN personal credits. Packs expire instead of refreshing, so resetAt
+        // is an expiry and recurring stays false ("Expires in").
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              recurring: quota.recurring === true,
+            });
+          });
+        }
+        break;
+
       case "volceapi":
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {

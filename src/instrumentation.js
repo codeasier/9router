@@ -10,5 +10,8 @@ export async function register() {
 
     const { startModelCatalogSync } = await import("@/lib/modelCatalog/sync.js");
     startModelCatalogSync();
+
+    const { startTraeAutoCheckin } = await import("@/shared/services/traeAutoCheckin.js");
+    startTraeAutoCheckin();
   }
 }

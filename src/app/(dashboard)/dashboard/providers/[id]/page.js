@@ -39,7 +39,7 @@ const MCODE_LEASE_PROVIDERS = new Set(["minimax-code", "minimax-code-global"]);
 // Providers whose registry list is only an offline fallback: the dashboard
 // renders the live per-connection catalog from GET /api/providers/[id]/models
 // when one resolves, and falls back to the static rows otherwise.
-const LIVE_MODEL_CATALOG_PROVIDERS = new Set(["cursor", "zed", "claude", "commandcode", "antigravity"]);
+const LIVE_MODEL_CATALOG_PROVIDERS = new Set(["cursor", "zed", "claude", "commandcode", "antigravity", "trae", "trae-global", "trae-enterprise"]);
 
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
@@ -576,6 +576,7 @@ export default function ProviderDetailPage() {
     }
 
     let cancelled = false;
+    setLiveModels([]);
     if (providerId === "zed") setLiveModelsError(null);
     fetch(`/api/providers/${connection.id}/models`, { cache: "no-store" })
       .then(async (res) => ({ ok: res.ok, data: await res.json().catch(() => null) }))

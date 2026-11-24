@@ -17,6 +17,7 @@ import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { resolveClineModels, resolveClinepassModels } from "open-sse/services/clinepassModels.js";
 import { NOUS_MODELS_URL, normalizeNousModels } from "open-sse/services/nous.js";
 import { resolveCommandCodeModels } from "open-sse/services/commandcodeModels.js";
+import { resolveTraeModels } from "open-sse/services/traeSolo.js";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import codexProvider from "open-sse/providers/registry/codex.js";
@@ -133,6 +134,32 @@ const getStaticProviderModels = (providerId) =>
     id: model.id,
     name: model.name || model.id,
   }));
+
+// Trae, Trae International and Trae Enterprise share one account directory.
+// A miss keeps the handwritten registry rows so the picker is never empty.
+async function resolveTraeProviderModels(connection) {
+  const provider = connection.provider;
+  if (!connection.accessToken && !connection.apiKey) {
+    return {
+      models: getStaticProviderModels(provider),
+      warning: "Trae connection has no access token; using the static catalog.",
+    };
+  }
+  const proxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const models = await resolveTraeModels(connection, {
+    forceRefresh: true,
+    signal: AbortSignal.timeout(20000),
+    proxyOptions: {
+      enabled: proxy.connectionProxyEnabled === true,
+      ...toCredentialProxyFields(proxy),
+    },
+  });
+  if (models.length) return { models };
+  return {
+    models: getStaticProviderModels(provider),
+    warning: "Trae returned no live models; falling back to static catalog.",
+  };
+}
 
 // Generic custom resolver for OAuth providers that need refresh-on-401 + token persist.
 // Receives a `fetchFn(token)` and returns parsed models or throws.
@@ -322,6 +349,9 @@ const PROVIDER_MODELS_CONFIG = {
     ...createOpenAIModelsConfig(NOUS_MODELS_URL),
     parseResponse: normalizeRoutedNousModels,
   },
+  trae: { customResolver: resolveTraeProviderModels },
+  "trae-global": { customResolver: resolveTraeProviderModels },
+  "trae-enterprise": { customResolver: resolveTraeProviderModels },
   // CommandCode's catalog URL needs no auth, but the route's token guard above
   // still requires a configured connection, so an empty key cannot enumerate it.
   commandcode: {

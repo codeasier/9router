@@ -28,6 +28,7 @@ const ALIAS_TOKENS = [
   "br","bedrock","aws-bedrock",
   "brx","bedrock-xai","bedrock-grok",
   "nous","nous-portal","nous-research","ns",
+  "tcn", "trg", "tre",
   "odg","opendesign","opendesign-go","dr","relay","deeprelay",
   "qc","qctp","qwencloud","qwen-cloud",
   "volce","volceapi",

@@ -125,6 +125,8 @@ function normalizeStaticModel(model, connection) {
   };
 }
 
+const TRAE_LIVE_PROVIDERS = new Set(["trae", "trae-global", "trae-enterprise"]);
+
 function normalizeLiveModel(model, connection) {
   const rawId = typeof model === "string" ? model : model?.id || model?.name || model?.model || "";
   if (!rawId) return null;
@@ -135,7 +137,7 @@ function normalizeLiveModel(model, connection) {
 
   let requestModel = rawId;
   const isCompatible = isOpenAICompatibleProvider(connection.provider) || isAnthropicCompatibleProvider(connection.provider);
-  if (isCompatible && !rawId.includes("/")) {
+  if ((isCompatible || TRAE_LIVE_PROVIDERS.has(connection.provider)) && !rawId.includes("/")) {
     requestModel = `${connection.provider}/${rawId}`;
   }
 
@@ -280,11 +282,17 @@ export default function BasicChatPageClient() {
           })
         );
 
+        const traeLiveProviders = new Set();
         for (const result of liveResults) {
           const providerId = result.connection.provider || result.connection.id;
           const group = providerMap.get(providerId);
           if (!group) continue;
           group.models.push(...result.models);
+          if (result.models.length > 0 && TRAE_LIVE_PROVIDERS.has(providerId)) traeLiveProviders.add(providerId);
+        }
+        for (const providerId of traeLiveProviders) {
+          const group = providerMap.get(providerId);
+          if (group) group.models = group.models.filter((model) => model.source === "live");
         }
 
         const normalized = Array.from(providerMap.values())
