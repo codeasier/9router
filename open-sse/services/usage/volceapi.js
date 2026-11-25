@@ -12,10 +12,10 @@ import {
   VOLCEAPI_WINDOW_LABELS,
 } from "../../config/volceapi.js";
 import {
-  estimateModelCredit,
   findModelMeta,
   indexModelsById,
   resetAtForWindow,
+  resolveModelCredit,
   resolveVolceapiLimits,
   roundCredit,
 } from "./volceapiCredit.js";
@@ -194,17 +194,19 @@ function buildWindowDetails({ window, summary, byModel, byProvider, modelIndex }
         continue;
       }
       const meta = findModelMeta(modelIndex, modelId);
-      const estimated = estimateModelCredit(row, meta);
+      // The gateway reports its own credit for every row; the catalog
+      // coefficient is only a fallback for answers that omit it.
+      const resolved = resolveModelCredit(row, meta);
       const usedTokens = toFiniteNumber(row.total_tokens, 0);
-      if (!meta && usedTokens > 0) {
+      if (resolved.source === "coefficient" && !meta && usedTokens > 0) {
         creditComplete = false;
         incompleteReasons.push(`model-meta-${modelId}`);
       }
-      if (!estimated.complete) {
+      if (!resolved.complete) {
         creditComplete = false;
-        if (estimated.reason) incompleteReasons.push(`${estimated.reason}:${modelId}`);
+        if (resolved.reason) incompleteReasons.push(`${resolved.reason}:${modelId}`);
       } else {
-        credit += estimated.credit;
+        credit += resolved.credit;
       }
       modelRows.push({
         model: modelId,
@@ -214,8 +216,8 @@ function buildWindowDetails({ window, summary, byModel, byProvider, modelIndex }
         cacheHitRate: Number.isFinite(Number(row.cached_tokens)) && toFiniteNumber(row.req_tokens, 0) > 0
           ? toFiniteNumber(row.cached_tokens, 0) / toFiniteNumber(row.req_tokens, 0)
           : (Number.isFinite(Number(row.cache_hit_rate)) ? Number(row.cache_hit_rate) : null),
-        credit: estimated.complete ? estimated.credit : null,
-        creditComplete: estimated.complete,
+        credit: resolved.complete ? resolved.credit : null,
+        creditComplete: resolved.complete,
       });
     }
   }
