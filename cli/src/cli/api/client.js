@@ -224,7 +224,7 @@ async function getProviderModels(id) {
  */
 async function getOAuthAuthUrl(provider) {
   // Codex requires fixed port 1455 and path /auth/callback
-  const redirectUri = provider === "codex" 
+  const redirectUri = provider === "codex" || provider === "codex-backup"
     ? "http://localhost:1455/auth/callback"
     : "http://localhost:20128/callback";
   return makeRequest("GET", `/api/oauth/${provider}/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`);

@@ -4,6 +4,7 @@ import { getCapabilitiesForModel } from "./capabilities.js";
 import { matchPattern } from "./pricing.js";
 import { resolveKiroEffortPath } from "../config/kiroConstants.js";
 import { getProviderModels } from "../config/providerModels.js";
+import { codexCatalogAlias } from "./codexFamily.js";
 
 // Shared level sets (deduped) — verified against provider docs + wire in thinkingUnified.applyFormat.
 const L = {
@@ -123,11 +124,14 @@ export function getThinkingLevels(provider, model) {
   const caps = getCapabilitiesForModel(normalizedProvider, model);
   if (!caps.reasoning) return null;
   const baseId = String(model || "").replace(/\([^()]+\)\s*$/, "");
-  const modelLevels = normalizedProvider === "codex"
-    ? getProviderModels("cx").find((entry) => entry.id === baseId)?.thinkingLevels
+  const catalogAlias = codexCatalogAlias(normalizedProvider);
+  // Backup shares Codex effort sets. Pattern rows stay keyed by "codex".
+  const patternProvider = catalogAlias ? "codex" : normalizedProvider;
+  const modelLevels = catalogAlias
+    ? getProviderModels(catalogAlias).find((entry) => entry.id === baseId)?.thinkingLevels
     : null;
   const hit = PATTERN_THINKING.find((entry) =>
-    (!entry.provider || entry.provider === normalizedProvider) && matchPattern(entry.pattern, model)
+    (!entry.provider || entry.provider === patternProvider) && matchPattern(entry.pattern, model)
   );
   let levels = modelLevels || hit?.levels
     || (isOpenAICompatibleNode(normalizedProvider) && OPENAI_MAX_EFFORT_MODEL.test(baseId) ? CODEX_GPT_5_6_LEVELS : null)

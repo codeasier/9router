@@ -132,11 +132,14 @@ export const GROK_CLI_CONFIG = { ...PROVIDER_OAUTH["grok-cli"] };
 export const MUSE_CONFIG = { ...PROVIDER_OAUTH["muse"] };
 
 // Trae OAuth — authorization_code flow with local callback.
-// CN (trae, trae-enterprise) asks api.trae.cn and opens www.trae.cn.
+// CN personal asks api.trae.cn and opens www.trae.cn.
+// Enterprise opens https://console.enterprise.trae.cn/authorization directly.
+// www.trae.cn has no enterprise seat, so it must not be the enterprise login.
 // International asks api.trae.ai and opens www.trae.ai.
 // api.marscode.com also answers, but its LoginHost is www.trae.ai, so CN must not use it.
 //   1) POST GetLoginGuidance {loginTraceID} → {Result.LoginHost}
 //   2) Browser opens ${loginHost}/authorization?client_id=...&login_trace_id=...&auth_callback_url=${cb}
+//      Enterprise also sends loginScope=tob, channel_name=common and an S256 code_challenge.
 //   3) Redirect → ${cb}?refreshToken=...&loginHost=...&isRedirect=true
 //   4) POST ExchangeToken {ClientID, RefreshToken, ClientSecret:"-"} → {Result.AccessToken, ExpiresAt}
 //   5) POST GetUserInfo (x-cloudide-token) → email/name

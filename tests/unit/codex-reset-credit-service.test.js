@@ -251,6 +251,50 @@ describe("Codex reset-credit server service", () => {
     expect(harness.deps.consumeResetCredit).not.toHaveBeenCalled();
   });
 
+  it("spends only the Codex pool whose auto-use setting is enabled", async () => {
+    const harness = createHarness();
+    harness.deps.getSettings.mockResolvedValue({
+      codexResetCreditAutoUseMinutes: 0,
+      codexBackupResetCreditAutoUseMinutes: 10,
+    });
+    harness.deps.getProviderConnections.mockImplementation(async ({ provider }) => {
+      if (provider === "codex-backup") {
+        return [{ ...connection("backup-1", { chatgptAccountId: "chatgpt-backup" }), provider: "codex-backup" }];
+      }
+      return [connection("codex-1", { chatgptAccountId: "chatgpt-main" })];
+    });
+
+    await service.runCodexResetCreditAutoUseTick(harness.deps, { running: false, locks: new Map() });
+
+    expect(harness.deps.getProviderConnections).toHaveBeenCalledTimes(1);
+    expect(harness.deps.getProviderConnections).toHaveBeenCalledWith({ provider: "codex-backup", isActive: true });
+    expect(harness.deps.consumeResetCredit).toHaveBeenCalledTimes(1);
+    expect(harness.deps.consumeResetCredit.mock.calls[0][3]).toEqual(
+      expect.objectContaining({ chatgptAccountId: "chatgpt-backup" }),
+    );
+  });
+
+  it("consumes one shared ChatGPT account once across both Codex providers", async () => {
+    const harness = createHarness();
+    harness.deps.getSettings.mockResolvedValue({
+      codexResetCreditAutoUseMinutes: 10,
+      codexBackupResetCreditAutoUseMinutes: 10,
+    });
+    harness.deps.getProviderConnections.mockImplementation(async ({ provider }) => {
+      if (provider === "codex-backup") {
+        return [{ ...connection("backup-shared", { chatgptAccountId: "chatgpt-shared" }), provider: "codex-backup" }];
+      }
+      return [connection("codex-shared", { chatgptAccountId: "chatgpt-shared" })];
+    });
+
+    await service.runCodexResetCreditAutoUseTick(harness.deps, { running: false, locks: new Map() });
+
+    expect(harness.deps.consumeResetCredit).toHaveBeenCalledTimes(1);
+    expect(harness.deps.consumeResetCredit.mock.calls[0][3]).toEqual(
+      expect.objectContaining({ chatgptAccountId: "chatgpt-shared" }),
+    );
+  });
+
   it("normalizes persisted scheduler configuration", () => {
     expect(service.normalizeCodexResetAutoUseMinutes(undefined)).toBe(0);
     expect(service.normalizeCodexResetAutoUseMinutes("1.6")).toBe(2);
@@ -268,6 +312,30 @@ describe("Codex reset-credit server service", () => {
     expect(vi.getTimerCount()).toBe(1);
 
     service.configureCodexResetCreditAutoUse({ codexResetCreditAutoUseMinutes: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("keeps the scheduler up while either Codex pool has auto-use enabled", async () => {
+    vi.useFakeTimers();
+    const db = await import("@/lib/localDb");
+    db.getSettings.mockResolvedValue({ codexBackupResetCreditAutoUseMinutes: 10 });
+    db.getProviderConnections.mockResolvedValue([]);
+
+    service.configureCodexResetCreditAutoUse({
+      codexResetCreditAutoUseMinutes: 0,
+      codexBackupResetCreditAutoUseMinutes: 10,
+    });
+    await vi.waitFor(() => expect(db.getProviderConnections).toHaveBeenCalledWith({
+      provider: "codex-backup",
+      isActive: true,
+    }));
+    expect(vi.getTimerCount()).toBe(1);
+
+    service.configureCodexResetCreditAutoUse({
+      codexResetCreditAutoUseMinutes: 0,
+      codexBackupResetCreditAutoUseMinutes: 0,
+    });
     expect(vi.getTimerCount()).toBe(0);
     vi.useRealTimers();
   });

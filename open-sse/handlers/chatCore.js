@@ -24,6 +24,7 @@ import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
+import { isCodexFamilyProvider } from "../providers/codexFamily.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { takeRenamedToolNames } from "../utils/opencodeFingerprint.js";
 import { injectCaveman } from "../rtk/caveman.js";
@@ -210,7 +211,7 @@ async function handleChatCoreAttempt({ body, modelInfo, credentials, log, onCred
   // Skip all translation/normalization — only model and Bearer are swapped
   const clientTool = detectClientTool(clientRawRequest?.headers || {}, body);
   const passthrough = isNativePassthrough(clientTool, provider);
-  const effectiveAllowCodexSseFallback = provider === "codex" && clientTool === "codex" && passthrough
+  const effectiveAllowCodexSseFallback = isCodexFamilyProvider(provider) && clientTool === "codex" && passthrough
     ? allowCodexSseFallback
     : true;
 
@@ -240,7 +241,7 @@ async function handleChatCoreAttempt({ body, modelInfo, credentials, log, onCred
   if (passthrough) {
     log?.debug?.("PASSTHROUGH", `${clientTool} → ${provider} | native lossless`);
     translatedBody = { ...body, model: stripThinkingSuffix(upstreamModel) };
-    if (provider === "codex") {
+    if (isCodexFamilyProvider(provider)) {
       const suffixThinking = {};
       applyThinking(sourceFormat, upstreamModel, suffixThinking, provider, forcedThinking);
       // applyThinking emits the wire shape for the source format: reasoning_effort

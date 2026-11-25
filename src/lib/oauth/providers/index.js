@@ -77,7 +77,7 @@ export { extractCodexAccountInfo, fetchKiroProfileArn };
  */
 export function getProvider(name) {
   // Legacy kimi-coding → kimi (dual-auth merge)
-  const key = name === "kimi-coding" ? "kimi" : name;
+  const key = name === "kimi-coding" ? "kimi" : name === "codex-backup" ? "codex" : name;
   const provider = PROVIDERS[key];
   if (!provider) {
     throw new Error(`Unknown provider: ${name}`);
@@ -238,7 +238,7 @@ export async function backfillCodexEmails() {
     const { getProviderConnections, updateProviderConnection } = await import("@/lib/localDb");
     const connections = await getProviderConnections();
     const targets = connections.filter((c) => {
-      if (c.provider !== "codex" || c.authType !== "oauth" || !c.idToken) return false;
+      if ((c.provider !== "codex" && c.provider !== "codex-backup") || c.authType !== "oauth" || !c.idToken) return false;
       const hasEmail = !!c.email;
       const hasAccountInfo = !!c.providerSpecificData?.chatgptAccountId;
       return !hasEmail || !hasAccountInfo;

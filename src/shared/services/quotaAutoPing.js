@@ -12,19 +12,23 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { refreshAndUpdateCredentials } from "@/app/api/usage/[connectionId]/route.js";
 import { QUOTA_AUTOPING_CONFIG } from "@/shared/constants/config";
 import { getDuePingSlot, normalizePingSchedule } from "@/shared/services/quotaPingSchedule";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 
 const C = QUOTA_AUTOPING_CONFIG;
 const CLAUDE_PING_URL = "https://api.anthropic.com/v1/messages?beta=true";
+
+const codexPingHandler = {
+  getUsage: (connection, proxyOptions) => getCodexUsage(connection.accessToken, proxyOptions, connection.providerSpecificData),
+  sendPing: sendCodexPing,
+};
 
 const providerHandlers = {
   claude: {
     getUsage: (connection, proxyOptions) => getClaudeUsage(connection.accessToken, proxyOptions),
     sendPing: sendClaudePing,
   },
-  codex: {
-    getUsage: (connection, proxyOptions) => getCodexUsage(connection.accessToken, proxyOptions, connection.providerSpecificData),
-    sendPing: sendCodexPing,
-  },
+  codex: codexPingHandler,
+  "codex-backup": codexPingHandler,
 };
 
 // Survive Next.js hot reload and keep one scheduler per server process.
@@ -156,7 +160,7 @@ async function drainResponseBody(response) {
 }
 
 async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
-  const executor = deps.getExecutor("codex");
+  const executor = deps.getExecutor(connection.provider || "codex");
   const { response } = await executor.execute({
     model: providerConfig.pingModel,
     stream: true,
@@ -221,7 +225,7 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
   const quotas = usage?.quotas || {};
   const quota = quotas?.[providerConfig.quotaKey];
   const windowSeconds = toFiniteNumber(quota?.windowSeconds);
-  if (provider === "codex" && windowSeconds > 0 && windowSeconds !== CODEX_QUOTA_WINDOWS.session.seconds) return;
+  if (isCodexFamilyProvider(provider) && windowSeconds > 0 && windowSeconds !== CODEX_QUOTA_WINDOWS.session.seconds) return;
   let resetAt = quota?.resetAt;
   if (resetAt) state.resetCache[key] = resetAt;
 

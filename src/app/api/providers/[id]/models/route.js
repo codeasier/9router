@@ -653,6 +653,8 @@ const PROVIDER_MODELS_CONFIG = {
   }
 };
 
+PROVIDER_MODELS_CONFIG["codex-backup"] = PROVIDER_MODELS_CONFIG.codex;
+
 /**
  * GET /api/providers/[id]/models - Get models list from provider
  */

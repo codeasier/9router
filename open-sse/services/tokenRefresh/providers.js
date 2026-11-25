@@ -1,6 +1,7 @@
 import { PROVIDERS, PROVIDER_OAUTH } from "../../config/providers.js";
 import { OAUTH_ENDPOINTS, GITHUB_COPILOT, buildKimiHeaders } from "../../config/appConstants.js";
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
+import { traeTokenFromExchangePayload } from "../traeToken.js";
 import { dedupRefresh } from "./dedup.js";
 import { buildExternalIdpRefreshParams } from "../../../src/lib/oauth/kiroExternalIdp.js";
 import { buildKiroIdentityHeaders } from "../../shared/kiroIdentity.js";
@@ -653,21 +654,22 @@ export async function refreshTraeToken(refreshToken, credentials, log, providerI
       }
 
       const payload = await response.json();
-      const result = payload?.Result || payload?.result || payload;
-      const accessToken = result?.AccessToken || result?.accessToken;
+      const parsed = traeTokenFromExchangePayload(payload);
+      const accessToken = parsed?.accessToken;
       if (!accessToken) {
-        log?.error?.("TOKEN_REFRESH", "Trae refresh returned no AccessToken", { payload });
+        const message = typeof payload?.message === "string" ? payload.message.slice(0, 180) : "";
+        log?.error?.("TOKEN_REFRESH", "Trae refresh returned no AccessToken", {
+          code: payload?.code ?? payload?.Code ?? null,
+          message,
+        });
         return null;
       }
 
-      const newRefresh = result?.RefreshToken || result?.refreshToken || refreshToken;
-      const expiresAt = result?.ExpiresAt || result?.expiresAt;
+      const newRefresh = parsed.refreshToken || refreshToken;
+      const expiresAt = parsed.expiresAt;
       let expiresIn;
       if (typeof expiresAt === "number") {
         expiresIn = Math.max(1, expiresAt - Math.floor(Date.now() / 1000));
-      } else if (typeof expiresAt === "string") {
-        const ms = new Date(expiresAt).getTime() - Date.now();
-        expiresIn = ms > 0 ? Math.floor(ms / 1000) : undefined;
       }
 
       log?.info?.("TOKEN_REFRESH", "Successfully refreshed Trae token", {

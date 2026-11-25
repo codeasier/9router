@@ -6,6 +6,9 @@ import traeGlobalRegistry from "../../open-sse/providers/registry/trae-global.js
 import traeEnterpriseRegistry from "../../open-sse/providers/registry/trae-enterprise.js";
 import { PROVIDERS } from "../../open-sse/config/providers.js";
 import traeOAuth, { parseTraeCallback, traeAccessTokenFromExchange, traeEnterprise, traeGlobal } from "../../src/lib/oauth/providers/trae.js";
+import { generateAuthData } from "../../src/lib/oauth/providers/index.js";
+import { generateCodeChallenge } from "../../src/lib/oauth/utils/pkce.js";
+import { clearTraeSession, getTraeSessionStatus, registerTraeSession } from "../../src/lib/oauth/utils/server.js";
 import { traeOAuthCallbackPath } from "../../src/lib/oauth/constants/oauth.js";
 import {
   clearTraeCatalogCache,
@@ -51,15 +54,19 @@ const OUTPUT = [
 ].join("\n");
 
 describe("Trae llm_utils_chat", () => {
-  it("pins each provider to its own gateway and OAuth exchange", () => {
+  it("pins each provider to its own gateway and OAuth exchange", async () => {
     expect(PROVIDERS.trae.baseUrl).toBe("https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat");
     expect(PROVIDERS["trae-global"].baseUrl).toBe("https://coresg-normal.trae.ai/api/agent/v3/llm_utils_chat");
     expect(PROVIDERS["trae-enterprise"].baseUrl).toBe("https://console.enterprise.trae.cn/api/agent/v3/llm_utils_chat");
     expect(PROVIDERS.trae.tokenUrl).toBe("https://api.trae.cn/cloudide/api/v3/trae/oauth/ExchangeToken");
-    expect(PROVIDERS["trae-enterprise"].tokenUrl).toBe(PROVIDERS.trae.tokenUrl);
+    expect(PROVIDERS["trae-enterprise"].tokenUrl).toBe("https://console.enterprise.trae.cn/cloudide/api/v3/trae/oauth/ExchangeToken");
     expect(PROVIDERS["trae-global"].tokenUrl).toBe("https://api.trae.ai/cloudide/api/v3/trae/oauth/ExchangeToken");
     expect(traeOAuth.loginGuidanceUrls[0]).toBe("https://api.trae.cn/cloudide/api/v3/trae/GetLoginGuidance");
-    expect(traeEnterprise.loginGuidanceUrls).toEqual(traeOAuth.loginGuidanceUrls);
+    expect(traeEnterprise.loginHost).toBe("https://console.enterprise.trae.cn");
+    expect(traeEnterprise.apiOrigins).toEqual(["https://console.enterprise.trae.cn"]);
+    expect(traeEnterprise.flowType).toBe("authorization_code_pkce");
+    expect(traeOAuth.flowType).toBe("authorization_code");
+    expect(traeGlobal.flowType).toBe("authorization_code");
     expect(traeGlobal.loginGuidanceUrls[0]).toBe("https://api.trae.ai/cloudide/api/v3/trae/GetLoginGuidance");
     expect(traeOAuthCallbackPath("trae")).toBe("/authorize");
     expect(traeOAuthCallbackPath("trae-enterprise")).toBe("/authorize");
@@ -67,6 +74,46 @@ describe("Trae llm_utils_chat", () => {
     expect(getExecutor("trae").provider).toBe("trae");
     expect(getExecutor("trae-global").provider).toBe("trae-global");
     expect(getExecutor("trae-enterprise").provider).toBe("trae-enterprise");
+    const prepared = await traeEnterprise.prepareConfig(traeEnterprise.config);
+    const challenge = "enterprise-challenge-test";
+    const authUrl = new URL(traeEnterprise.buildAuthUrl(prepared, "http://127.0.0.1:9/authorize", prepared.loginTraceID, challenge));
+    expect(authUrl.origin).toBe("https://console.enterprise.trae.cn");
+    expect(authUrl.protocol).toBe("https:");
+    expect(authUrl.pathname).toBe("/authorization");
+    expect(authUrl.searchParams.get("auth_callback_url")).toBe("http://127.0.0.1:9/authorize");
+    expect(authUrl.searchParams.get("loginScope")).toBe("tob");
+    expect(authUrl.searchParams.get("channel_name")).toBe("common");
+    expect(authUrl.searchParams.get("code_challenge")).toBe(challenge);
+    expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authUrl.hostname).not.toBe("www.trae.cn");
+    expect(() => traeEnterprise.buildAuthUrl(prepared, "http://127.0.0.1:9/authorize", prepared.loginTraceID)).toThrow(/PKCE/);
+    for (const [provider, host] of [[traeOAuth, "https://www.trae.cn"], [traeGlobal, "https://www.trae.ai"]]) {
+      const personal = new URL(provider.buildAuthUrl(
+        { ...provider.config, loginHost: host, loginTraceID: "trace-personal" },
+        "http://127.0.0.1:9/authorize",
+        "trace-personal",
+        "should-not-appear",
+      ));
+      expect(personal.origin).toBe(host);
+      expect(personal.searchParams.get("loginScope")).toBeNull();
+      expect(personal.searchParams.get("channel_name")).toBeNull();
+      expect(personal.searchParams.get("code_challenge")).toBeNull();
+      expect(personal.searchParams.get("code_challenge_method")).toBeNull();
+    }
+    const generated = await generateAuthData("trae-enterprise", "http://127.0.0.1:9/authorize");
+    const generatedUrl = new URL(generated.authUrl);
+    expect(generated.flowType).toBe("authorization_code_pkce");
+    expect(generatedUrl.searchParams.get("code_challenge")).toBe(generateCodeChallenge(generated.codeVerifier));
+    expect(generatedUrl.searchParams.get("loginScope")).toBe("tob");
+    registerTraeSession({ state: "ent-state", provider: "trae-enterprise", codeVerifier: "verifier-ent" });
+    registerTraeSession({ state: "cn-state", provider: "trae", codeVerifier: "verifier-cn" });
+    try {
+      expect(getTraeSessionStatus("ent-state", "trae-enterprise").codeVerifier).toBe("verifier-ent");
+      expect(getTraeSessionStatus("cn-state", "trae").codeVerifier).toBeUndefined();
+    } finally {
+      clearTraeSession("ent-state", "trae-enterprise");
+      clearTraeSession("cn-state", "trae");
+    }
     expect(traeRegistry.display.name).toBe("Trae");
     expect(traeGlobalRegistry.display.name).toBe("Trae (Global)");
     expect(traeEnterpriseRegistry.display.name).toBe("Trae (Enterprise)");
@@ -96,6 +143,15 @@ describe("Trae llm_utils_chat", () => {
       refreshToken: "rt-new",
       expiresAt: 123,
     });
+    expect(traeAccessTokenFromExchange({
+      code: 0,
+      Data: { Token: "jwt-ent", RefreshToken: "rt-ent", TokenExpireAt: 1_803_363_419_741 },
+    })).toEqual({
+      accessToken: "jwt-ent",
+      refreshToken: "rt-ent",
+      expiresAt: 1_803_363_419,
+    });
+    expect(traeAccessTokenFromExchange({ code: 30022, message: "网络异常", Data: null })).toBeNull();
   });
 
   it("keeps session_id off the consumer gateway and on the enterprise gateway", () => {
@@ -292,6 +348,74 @@ describe("Trae llm_utils_chat", () => {
     );
     expect(calls.map((call) => call.function)).toContain("solo_coder");
     expect(calls[0].url).toBe("https://console.enterprise.trae.cn/api/ide/v1/get_detail_param");
+  });
+
+  it("keeps the enterprise PKCE verifier off ExchangeToken", async () => {
+    const original = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, options) => {
+      calls.push({ url: String(url), body: options.body, headers: options.headers });
+      return new Response(JSON.stringify({ Result: "jwt-from-exchange" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    try {
+      const tokens = await traeEnterprise.exchangeToken(
+        traeEnterprise.config,
+        "http://127.0.0.1:9/authorize?refreshToken=rt-1",
+        null,
+        "verifier-must-stay-local",
+      );
+      expect(tokens.accessToken).toBe("jwt-from-exchange");
+      expect(tokens.refreshToken).toBe("rt-1");
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("https://console.enterprise.trae.cn/cloudide/api/v3/trae/oauth/ExchangeToken");
+      expect(JSON.parse(calls[0].body)).toEqual({
+        ClientID: "ono9krqynydwx5",
+        RefreshToken: "rt-1",
+        ClientSecret: "-",
+        UserID: "",
+      });
+      expect(JSON.stringify(calls[0])).not.toContain("verifier-must-stay-local");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("uses the enterprise console Data.Token and does not keep the callback userJwt", async () => {
+    const original = globalThis.fetch;
+    const userJwt = "u".repeat(50);
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      code: 0,
+      Data: { Token: "jwt-real", RefreshToken: "rt-new", TokenExpireAt: 1_803_363_419_741 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+    try {
+      const tokens = await traeEnterprise.exchangeToken(
+        traeEnterprise.config,
+        `http://127.0.0.1:9/authorize?refreshToken=rt-old&userJwt=${userJwt}`,
+      );
+      expect(tokens.accessToken).toBe("jwt-real");
+      expect(tokens.refreshToken).toBe("rt-new");
+      expect(tokens.expiresAt).toBe(1_803_363_419);
+      expect(tokens._authMethod).toBe("oauth");
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      code: 30022,
+      message: "网络异常",
+      Data: null,
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+    try {
+      await expect(traeEnterprise.exchangeToken(
+        traeEnterprise.config,
+        `http://127.0.0.1:9/authorize?refreshToken=rt-old&userJwt=${userJwt}`,
+      )).rejects.toThrow(/网络异常/);
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 
   it("maps a pasted JWT onto the provider that was connected", async () => {

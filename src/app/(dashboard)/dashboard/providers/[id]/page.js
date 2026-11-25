@@ -31,6 +31,7 @@ import AutoPingScheduleModal from "./AutoPingScheduleModal";
 import WebLoginButton, { WEB_LOGIN_PROVIDERS } from "../components/WebLoginButton.js";
 import MinimaxLeaseButton from "../components/MinimaxLeaseButton.js";
 import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -44,6 +45,7 @@ const LIVE_MODEL_CATALOG_PROVIDERS = new Set(["cursor", "zed", "claude", "comman
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
   codex: "codexAutoPing",
+  "codex-backup": "codexBackupAutoPing",
 };
 
 function sleep(ms) {
@@ -1837,7 +1839,7 @@ export default function ProviderDetailPage() {
                         Cookie
                       </Button>
                     )}
-                    {providerId === "codex" && (
+                    {isCodexFamilyProvider(providerId) && (
                       <Button size="sm" icon="playlist_add" variant="secondary" onClick={() => setShowBulkImportCodex(true)}>
                         {translate("Bulk Add")}
                       </Button>
@@ -1910,7 +1912,7 @@ export default function ProviderDetailPage() {
                       Cookie
                     </Button>
                   )}
-                  {providerId === "codex" && (
+                  {isCodexFamilyProvider(providerId) && (
                     <Button
                       size="sm"
                       icon="playlist_add"
@@ -2159,9 +2161,10 @@ export default function ProviderDetailPage() {
         />
       )}
 
-      {providerId === "codex" && (
+      {isCodexFamilyProvider(providerId) && (
         <BulkImportCodexModal
           isOpen={showBulkImportCodex}
+          providerId={providerId}
           onClose={() => setShowBulkImportCodex(false)}
           onSuccess={fetchConnections}
         />

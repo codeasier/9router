@@ -355,6 +355,26 @@ describe("checkBudget matching", () => {
     expect((await keyPolicy.checkBudget(KEY, policy, null)).ok).toBe(true); // provider unknown → skip specific
   });
 
+  it("keeps codex and codex-backup budgets independent", async () => {
+    const spent = { codex: 6, "codex-backup": 0 };
+    keyPolicy._setBudgetQuery(async (_key, provider) => spent[provider] ?? 0);
+    const policy = {
+      budgets: [
+        { provider: "codex", limitUsd: 5, period: "day" },
+        { provider: "codex-backup", limitUsd: 5, period: "day" },
+      ],
+    };
+
+    expect((await keyPolicy.checkBudget(KEY, policy, "codex")).ok).toBe(false);
+    expect((await keyPolicy.checkBudget(KEY, policy, "codex-backup")).ok).toBe(true);
+
+    keyPolicy._resetKeyPolicyState();
+    spent.codex = 0;
+    spent["codex-backup"] = 6;
+    expect((await keyPolicy.checkBudget(KEY, policy, "codex")).ok).toBe(true);
+    expect((await keyPolicy.checkBudget(KEY, policy, "codex-backup")).ok).toBe(false);
+  });
+
   it("wildcard budget applies to any provider", async () => {
     keyPolicy._setBudgetQuery(async () => 10);
     const policy = { budgets: [{ provider: "*", limitUsd: 5, period: "day" }] };

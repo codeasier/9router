@@ -31,6 +31,7 @@ const ADAPTERS = {
   "sensenova-intl": createOpenAIAdapter("sensenova-intl"),
   gemini,
   codex,
+  "codex-backup": codex,
   sdwebui,
   comfyui,
   huggingface,

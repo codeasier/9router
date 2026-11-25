@@ -10,6 +10,7 @@
 
 import crypto from "crypto";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
+import { isCodexFamilyProvider } from "../providers/codexFamily.js";
 
 // Runtime storage: Key = connectionId, Value = { sessionId, lastUsed }
 const runtimeSessionStore = new Map();
@@ -147,7 +148,10 @@ function extractClientSessionId(headers, body, scope = "") {
         const v = headerValue(headers, key);
         if (v) return v;
     }
-    const requestId = (scope === "kiro" || scope === "codex")
+    // Codex sends a fresh x-client-request-id per call. Using it as the session
+    // would split the prompt cache. Backup uses its own scope string so the
+    // cache key stays separate, but it must ignore that header the same way.
+    const requestId = (scope === "kiro" || isCodexFamilyProvider(scope))
         ? null
         : headerValue(headers, "x-client-request-id");
     if (requestId) return requestId;

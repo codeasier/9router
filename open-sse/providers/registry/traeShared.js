@@ -28,6 +28,17 @@ export const TRAE_OAUTH_GLOBAL = {
   userInfoUrl: "https://api.trae.ai/cloudide/api/v3/trae/GetUserInfo",
 };
 
+// www.trae.cn has no enterprise seat. The console authorization page is the login.
+const TRAE_ENTERPRISE_ORIGIN = "https://console.enterprise.trae.cn";
+export const TRAE_OAUTH_ENTERPRISE = {
+  ...TRAE_OAUTH_COMMON,
+  loginGuidanceUrl: `${TRAE_ENTERPRISE_ORIGIN}/authorization`,
+  tokenUrl: `${TRAE_ENTERPRISE_ORIGIN}/cloudide/api/v3/trae/oauth/ExchangeToken`,
+  exchangeTokenUrl: `${TRAE_ENTERPRISE_ORIGIN}/cloudide/api/v3/trae/oauth/ExchangeToken`,
+  refreshUrl: `${TRAE_ENTERPRISE_ORIGIN}/cloudide/api/v3/trae/oauth/ExchangeToken`,
+  userInfoUrl: `${TRAE_ENTERPRISE_ORIGIN}/cloudide/api/v3/trae/GetUserInfo`,
+};
+
 const CN_MODELS = [
   { id: "glm-5.2", name: "GLM-5.2" },
   { id: "glm-5.3", name: "GLM-5.3" },

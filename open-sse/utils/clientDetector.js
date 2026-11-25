@@ -8,7 +8,7 @@ const NATIVE_PAIRS = {
   "claude": ["claude", "anthropic"],
   "gemini-cli": ["gemini-cli"],
   "antigravity": ["antigravity"],
-  "codex": ["codex"],
+  "codex": ["codex", "codex-backup"],
 };
 
 /**

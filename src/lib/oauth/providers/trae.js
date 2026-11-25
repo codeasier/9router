@@ -1,7 +1,12 @@
 import crypto from "crypto";
 import { TRAE_VERSION_CODE } from "open-sse/services/traeSolo.js";
+import { traeTokenFromExchangePayload } from "open-sse/services/traeToken.js";
 import { TRAE_CONFIG } from "../constants/oauth.js";
 import { extractJsonPath } from "./_shared.js";
+
+export function traeAccessTokenFromExchange(data) {
+  return traeTokenFromExchangePayload(data);
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Trae (ByteDance marscode) OAuth helpers
@@ -71,7 +76,9 @@ async function fetchTraeLoginGuidance(loginTraceId, urls) {
 }
 
 // Build the browser verification URL the user opens to sign in.
-function buildTraeVerificationUrl(loginHost, loginTraceId, callbackUrl, ctx) {
+// Enterprise adds the console's business-login marker and an S256 challenge.
+// Personal and international URLs stay on the shared query set.
+function buildTraeVerificationUrl(loginHost, loginTraceId, callbackUrl, ctx, enterprise) {
   const url = new URL(loginHost.startsWith("http") ? loginHost : `https://${loginHost.replace(/^\/+/, "")}`);
   url.pathname = TRAE_CONFIG.authorizationPath;
   const p = new URLSearchParams();
@@ -94,6 +101,12 @@ function buildTraeVerificationUrl(loginHost, loginTraceId, callbackUrl, ctx) {
   p.set("x_env", ctx.x_env);
   p.set("x_app_version", ctx.x_app_version);
   p.set("x_app_type", ctx.x_app_type);
+  if (enterprise) {
+    p.set("code_challenge", enterprise.codeChallenge);
+    p.set("code_challenge_method", "S256");
+    p.set("loginScope", "tob");
+    p.set("channel_name", "common");
+  }
   url.search = p.toString();
   return url.toString();
 }
@@ -151,26 +164,9 @@ function traeCallbackParams(raw) {
 }
 
 // CN returns the Cloud-IDE token as Result itself (a string). The international
-// endpoint returns Result.AccessToken. The website stores that Result on the
-// callback as userJwt.
-export function traeAccessTokenFromExchange(data) {
-  const result = data?.Result ?? data?.result;
-  if (typeof result === "string" && result.trim()) {
-    return { accessToken: result.trim(), refreshToken: null, expiresAt: null };
-  }
-  const record = result && typeof result === "object" && !Array.isArray(result) ? result : null;
-  if (!record) return null;
-  const accessToken = [
-    record.AccessToken, record.accessToken, record.access_token,
-    record.Token, record.token, record.Jwt, record.jwt, record.UserJwt, record.userJwt,
-  ].find((value) => typeof value === "string" && value.trim());
-  if (!accessToken) return null;
-  return {
-    accessToken: accessToken.trim(),
-    refreshToken: record.RefreshToken || record.refreshToken || record.refresh_token || null,
-    expiresAt: record.ExpiresAt || record.expiresAt || record.ExpiredAt || record.expiredAt || null,
-  };
-}
+// endpoint returns Result.AccessToken. The enterprise console returns Data.Token.
+// The website stores the CN Result on the callback as userJwt. That callback
+// value is not a usable enterprise chat token.
 
 function traeExchangeError(data) {
   return extractJsonPath(data, [
@@ -195,6 +191,9 @@ function isTraeCallbackInput(text) {
 // loginHost from the callback is intentionally NOT honored (SSRF guard: a callback
 // attacker could otherwise point this at internal hosts/cloud metadata).
 // POST ExchangeToken {ClientID, RefreshToken, ClientSecret, UserID} → {Result:{AccessToken,RefreshToken,ExpiresAt}}
+// The enterprise authorize URL carries an S256 challenge. The matching verifier
+// stays on the local login session: the captured IDE login did not show it on
+// this body, so it is not sent under a guessed field name.
 async function fetchTraeExchangeToken(refreshToken, cloudideToken, origins) {
   const body = JSON.stringify({
     ClientID: TRAE_CONFIG.clientId,
@@ -255,19 +254,30 @@ async function fetchTraeUserInfo(accessToken, origins) {
       });
       if (!res.ok) continue;
       const data = await res.json();
+      if (typeof data?.code === "number" && data.code !== 0) continue;
       return {
         email: extractJsonPath(data, [
           ["Result", "NonPlainTextEmail"], ["Result", "Email"], ["Result", "email"],
+          ["Data", "NonPlainTextEmail"], ["Data", "Email"], ["Data", "email"],
           ["email"], ["data", "email"],
         ]),
         name: extractJsonPath(data, [
           ["Result", "ScreenName"], ["Result", "Nickname"], ["Result", "Name"],
+          ["Data", "ScreenName"], ["Data", "Nickname"], ["Data", "Name"],
           ["result", "nickname"], ["nickname"], ["name"],
         ]),
-        aiRegion: extractJsonPath(data, [["Result", "AIRegion"], ["Result", "aiRegion"], ["aiRegion"]]),
-        region: extractJsonPath(data, [["Result", "Region"], ["Result", "region"], ["region"]]),
-        tenant: extractJsonPath(data, [["Result", "TenantID"], ["Result", "tenantId"], ["tenantId"]]),
-        userId: extractJsonPath(data, [["Result", "UserID"], ["Result", "userId"], ["userId"]]),
+        aiRegion: extractJsonPath(data, [
+          ["Result", "AIRegion"], ["Result", "aiRegion"], ["Data", "AIRegion"], ["Data", "aiRegion"], ["aiRegion"],
+        ]),
+        region: extractJsonPath(data, [
+          ["Result", "Region"], ["Result", "region"], ["Data", "Region"], ["Data", "region"], ["region"],
+        ]),
+        tenant: extractJsonPath(data, [
+          ["Result", "TenantID"], ["Result", "tenantId"], ["Data", "TenantID"], ["Data", "tenantId"], ["tenantId"],
+        ]),
+        userId: extractJsonPath(data, [
+          ["Result", "UserID"], ["Result", "userId"], ["Data", "UserID"], ["Data", "userId"], ["userId"],
+        ]),
       };
     } catch { /* try next origin */ }
   }
@@ -283,28 +293,44 @@ function traeScopeForRegion(aiRegion) {
 }
 
 // Browser OAuth shared by Trae CN, international and enterprise.
-// GetLoginGuidance → verification URL → local callback → ExchangeToken → GetUserInfo.
+// Personal and international: GetLoginGuidance → verification URL.
+// Enterprise pins the console host. www.trae.cn cannot sign in an enterprise seat.
+// Then local callback → ExchangeToken → GetUserInfo.
 // The provider id, not the user-info region, chooses which chat gateway is billed.
-function createTraeOAuthProvider({ chatRoute, userRegion, loginGuidanceUrls, apiOrigins }) {
+function createTraeOAuthProvider({ chatRoute, userRegion, loginGuidanceUrls, apiOrigins, loginHost: fixedLoginHost, enterpriseLogin = false }) {
   const pendingDevices = new Map();
   return {
     config: TRAE_CONFIG,
     loginGuidanceUrls,
+    loginHost: fixedLoginHost || null,
     apiOrigins,
-    flowType: "authorization_code",
+    // Only the enterprise console authorize page sends a PKCE challenge.
+    // generateAuthData forwards codeChallenge for authorization_code_pkce.
+    flowType: enterpriseLogin ? "authorization_code_pkce" : "authorization_code",
     callbackPath: TRAE_CONFIG.callbackPath,
     prepareConfig: async (config) => {
       const loginTraceID = crypto.randomUUID();
-      const loginHost = await fetchTraeLoginGuidance(loginTraceID, loginGuidanceUrls);
+      const loginHost = fixedLoginHost || await fetchTraeLoginGuidance(loginTraceID, loginGuidanceUrls);
       return { ...config, loginTraceID, loginHost };
     },
-    buildAuthUrl: (config, redirectUri, state) => {
+    buildAuthUrl: (config, redirectUri, state, codeChallenge) => {
       const ctx = buildTraeDeviceContext();
       const traceId = config.loginTraceID || state;
       if (traceId) pendingDevices.set(traceId, ctx);
-      return buildTraeVerificationUrl(config.loginHost, traceId, redirectUri, ctx);
+      if (enterpriseLogin && !codeChallenge) {
+        throw new Error("Trae enterprise login requires a PKCE code challenge");
+      }
+      return buildTraeVerificationUrl(
+        config.loginHost,
+        traceId,
+        redirectUri,
+        ctx,
+        enterpriseLogin ? { codeChallenge } : null,
+      );
     },
-    exchangeToken: async (config, code) => {
+    // codeVerifier is the enterprise S256 verifier from the login session.
+    // It is accepted so the callback can pass it through, and it is not sent.
+    exchangeToken: async (config, code, _redirectUri, _codeVerifier) => {
       const device = (config?.loginTraceID && pendingDevices.get(config.loginTraceID)) || buildTraeDeviceContext();
       if (config?.loginTraceID) pendingDevices.delete(config.loginTraceID);
       const trimmed = String(code || "").trim();
@@ -313,7 +339,8 @@ function createTraeOAuthProvider({ chatRoute, userRegion, loginGuidanceUrls, api
         const direct = usableCloudIdeToken(parsed.cloudideToken);
         try {
           if (!parsed.refreshToken) {
-            if (!direct) throw new Error("Trae callback missing refreshToken");
+            // Enterprise chat rejects the callback userJwt. Require ExchangeToken.
+            if (enterpriseLogin || !direct) throw new Error("Trae callback missing refreshToken");
             return {
               accessToken: direct,
               refreshToken: null,
@@ -328,7 +355,7 @@ function createTraeOAuthProvider({ chatRoute, userRegion, loginGuidanceUrls, api
             _device: device,
           };
         } catch (error) {
-          if (!direct) throw error;
+          if (enterpriseLogin || !direct) throw error;
           return {
             accessToken: direct,
             refreshToken: parsed.refreshToken,
@@ -393,6 +420,13 @@ export const traeGlobal = createTraeOAuthProvider({
   loginGuidanceUrls: TRAE_GLOBAL_LOGIN_GUIDANCE_URLS,
   apiOrigins: TRAE_GLOBAL_API_ORIGINS,
 });
-export const traeEnterprise = createTraeOAuthProvider({ chatRoute: "enterprise", userRegion: "CN", ...cnLogin });
+const TRAE_ENTERPRISE_ORIGIN = "https://console.enterprise.trae.cn";
+export const traeEnterprise = createTraeOAuthProvider({
+  chatRoute: "enterprise",
+  userRegion: "CN",
+  loginHost: TRAE_ENTERPRISE_ORIGIN,
+  apiOrigins: [TRAE_ENTERPRISE_ORIGIN],
+  enterpriseLogin: true,
+});
 
 export default trae;

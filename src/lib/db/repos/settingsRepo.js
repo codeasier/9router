@@ -72,6 +72,7 @@ const DEFAULT_SETTINGS = {
   // Per-provider user header overrides applied at dispatch: { [providerId]: { headers: {..} } }
   providerOverrides: {},
   codexResetCreditAutoUseMinutes: 0,
+  codexBackupResetCreditAutoUseMinutes: 0,
 };
 
 async function readRaw() {

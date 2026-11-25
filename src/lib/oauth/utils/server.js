@@ -139,11 +139,14 @@ const pendingExchanges = new Map();
  * Register a pending exchange session for server-side mode.
  * Modal client calls this before opening popup.
  */
-export function registerCodexSession({ state, codeVerifier, redirectUri }) {
+export function registerCodexSession({ state, codeVerifier, redirectUri, provider = "codex" }) {
   if (!state || !codeVerifier || !redirectUri) return false;
   pendingExchanges.set(state, {
     codeVerifier,
     redirectUri,
+    // The fixed-port callback is shared. The provider that started login decides
+    // which connection pool receives the new account.
+    provider: provider === "codex-backup" ? "codex-backup" : "codex",
     status: "pending",
     createdAt: Date.now(),
   });
@@ -224,15 +227,16 @@ export function startCodexProxy(appPort) {
           const { exchangeTokens } = await import("../providers.js");
           const { createProviderConnection } = await import("@/models");
 
+          const targetProvider = session.provider === "codex-backup" ? "codex-backup" : "codex";
           const tokenData = await exchangeTokens(
-            "codex",
+            targetProvider,
             code,
             session.redirectUri,
             session.codeVerifier,
             state
           );
           const connection = await createProviderConnection({
-            provider: "codex",
+            provider: targetProvider,
             authType: "oauth",
             ...tokenData,
             expiresAt: tokenData.expiresIn
@@ -438,8 +442,10 @@ export function stopXaiProxy() {
 // Trae dynamic-port proxy. One listener per provider id (CN / international /
 // enterprise), so connecting one does not clobber another. The callback saves
 // the connection under the provider that opened the listener.
-// CN opens www.trae.cn and must call back at /authorize. International keeps /callback.
-// Callback path = /authorize or /callback, with params refreshToken + loginHost.
+// Personal CN opens www.trae.cn. Enterprise opens the console over https.
+// Both must call back at /authorize. International keeps /callback.
+// Callback params are refreshToken + loginHost. The enterprise PKCE verifier
+// stays on the session and is not read from the callback.
 // ───────────────────────────────────────────────────────────────────────────
 
 const traeSlots = new Map();
@@ -451,9 +457,15 @@ function traeSlot(provider = "trae") {
   return traeSlots.get(provider);
 }
 
-export function registerTraeSession({ state, provider = "trae" }) {
+export function registerTraeSession({ state, provider = "trae", codeVerifier } = {}) {
   if (!state) return false;
-  traeSlot(provider).session = { state, status: "pending", provider, createdAt: Date.now() };
+  const session = { state, status: "pending", provider, createdAt: Date.now() };
+  // Only the enterprise authorize URL carries a challenge. Keep its verifier
+  // off the URL. Personal and international logins do not use PKCE.
+  if (provider === "trae-enterprise" && typeof codeVerifier === "string" && codeVerifier) {
+    session.codeVerifier = codeVerifier;
+  }
+  traeSlot(provider).session = session;
   return true;
 }
 export function getTraeSessionStatus(state, provider = "trae") {
@@ -510,7 +522,9 @@ export function startTraeProxy(provider = "trae") {
       try {
         const { exchangeTokens } = await import("../providers.js");
         const { createProviderConnection } = await import("@/models");
-        const tokenData = await exchangeTokens(provider, rawCallback);
+        // Pass the stored enterprise verifier through. ExchangeToken does not
+        // send it until a captured enterprise exchange shows the field name.
+        const tokenData = await exchangeTokens(provider, rawCallback, null, session.codeVerifier, session.state);
         const connection = await createProviderConnection({
           provider,
           authType: "oauth",

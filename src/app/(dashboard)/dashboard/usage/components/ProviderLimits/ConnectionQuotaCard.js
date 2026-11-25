@@ -6,6 +6,7 @@ import Toggle from "@/shared/components/Toggle";
 import Tooltip from "@/shared/components/Tooltip";
 import Card from "@/shared/components/Card";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
 import {
   filterQuotasForCard,
@@ -26,6 +27,7 @@ const KIRO_METHOD_LABELS = {
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
   codex: "codexAutoPing",
+  "codex-backup": "codexBackupAutoPing",
 };
 
 export const CLAUDE_RESET_LIMIT_NAMES = {
@@ -125,7 +127,7 @@ export default function ConnectionQuotaCard({
   onShowQuota,
 }) {
   const isInactive = conn.isActive === false;
-  const isCodex = conn.provider === "codex";
+  const isCodex = isCodexFamilyProvider(conn.provider);
   const claudeReset = conn.provider === "claude" ? quota?.raw?.resetCredits : null;
   const resetLabel = isCodex ? "Codex reset credit" : "Claude limit reset";
   const resetCreditCount = getCodexResetCreditCount(quota);
@@ -274,7 +276,7 @@ export default function ConnectionQuotaCard({
               }
               const tooltipText = activeModes.length > 0
                 ? `Auto-ping active: ${activeModes.join(" + ")}. Click to configure.`
-                : conn.provider === "codex"
+                : isCodexFamilyProvider(conn.provider)
                   ? "Auto-starts the next 5h Codex window after reset or on schedule. Click to configure."
                   : "Auto-starts a new window on quota reset or fixed schedule. Click to configure.";
 
@@ -391,7 +393,7 @@ export default function ConnectionQuotaCard({
               compact
               sortMode="default"
               showSortLabel={
-                conn.provider === "codex" && quotaSortMode !== "default"
+                isCodexFamilyProvider(conn.provider) && quotaSortMode !== "default"
               }
               onHideQuota={(quotaRow) => onHideQuota(conn.provider, quotaRow)}
             />

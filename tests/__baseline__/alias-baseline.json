@@ -2,6 +2,7 @@
   "aliasToId": {
     "cc": "claude",
     "cx": "codex",
+    "cx-new": "codex-backup",
     "gc": "gemini-cli",
     "qw": "qw",
     "if": "iflow",
@@ -182,6 +183,7 @@
     "codebuddy-cn": "cbcn",
     "codebuddy-intl": "cbai",
     "codex": "cx",
+    "codex-backup": "cx-new",
     "cohere": "cohere",
     "comfyui": "comfyui",
     "commandcode": "commandcode",
@@ -334,6 +336,7 @@
     "commandcode",
     "cu",
     "cx",
+    "cx-new",
     "dahl",
     "deepgram",
     "deeprelay",

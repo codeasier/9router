@@ -19,6 +19,7 @@ import p16 from "./clinepass.js";
 import p17 from "./cloudflare-ai.js";
 import p18 from "./codebuddy-cn.js";
 import p19 from "./codex.js";
+import codexBackup from "./codex-backup.js";
 import p20 from "./cohere.js";
 import p21 from "./comfyui.js";
 import p22 from "./commandcode.js";
@@ -176,6 +177,7 @@ export default [
   p17,
   p18,
   p19,
+  codexBackup,
   p20,
   p21,
   p22,

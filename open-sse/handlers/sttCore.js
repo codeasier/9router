@@ -3,6 +3,7 @@ import { createErrorResult } from "../utils/error.js";
 import { transcribeGeminiLive } from "./geminiLiveStt.js";
 import { transcribeCodex } from "./codexStt.js";
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
+import { isCodexFamilyProvider } from "../providers/codexFamily.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 // Next.js polyfills globalThis.FormData with a Web API implementation that lacks
@@ -292,7 +293,7 @@ export async function handleSttCore({ provider, model, formData, credentials, st
   if (!cfg) return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Provider '${provider}' does not support STT`);
 
   // OAuth transcription uses a fixed ChatGPT endpoint; never honor connection URL overrides.
-  if (provider === "codex" && cfg.format === "codex-transcribe") {
+  if (isCodexFamilyProvider(provider) && cfg.format === "codex-transcribe") {
     return transcribeCodex({ formData, credentials, signal, proxyOptions });
   }
 

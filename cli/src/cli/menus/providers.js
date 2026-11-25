@@ -161,6 +161,7 @@ const PROVIDER_MODELS = {
 const OAUTH_PROVIDERS = {
   claude: { id: "claude", alias: "cc", name: "Claude Code" },
   codex: { id: "codex", alias: "cx", name: "OpenAI Codex" },
+  "codex-backup": { id: "codex-backup", alias: "cx-new", name: "OpenAI Codex (Backup)" },
   "gemini-cli": { id: "gemini-cli", alias: "gc", name: "Gemini CLI" },
   github: { id: "github", alias: "gh", name: "GitHub Copilot" },
   antigravity: { id: "antigravity", alias: "ag", name: "Antigravity" },

@@ -16,12 +16,14 @@ import {
 } from "open-sse/services/usage.js";
 import { getCodexAccountIdentity } from "open-sse/services/usage/codex.js";
 import {
+  codexResetAutoUseSettingsKey,
   findExpiringCodexResetCredit,
   MAX_CODEX_RESET_AUTO_USE_MINUTES,
   normalizeCodexResetAutoUseMinutes,
 } from "./codexResetCreditUtils.js";
 
 export {
+  codexResetAutoUseSettingsKey,
   findExpiringCodexResetCredit,
   MAX_CODEX_RESET_AUTO_USE_MINUTES,
   normalizeCodexResetAutoUseMinutes,
@@ -236,11 +238,8 @@ export async function useCodexResetCredit(connection, options = {}, injectedDeps
     if (active) {
       const reconciled = await reconcileAttempt(active, inventory, deps);
       if (reconciled?.state === "retry_same_id") {
-        if (options.respectSetting === true) {
-          const settings = await deps.getSettings();
-          if (!normalizeCodexResetAutoUseMinutes(settings.codexResetCreditAutoUseMinutes)) {
-            return { attempt: active, state: "disabled", auto: true };
-          }
+        if (options.respectSetting === true && !(await resetAutoUseStillEnabled(deps, currentConnection?.provider))) {
+          return { attempt: active, state: "disabled", auto: true };
         }
         return await dispatchAttempt(active, currentConnection, prepared.proxyOptions, deps);
       }
@@ -260,11 +259,8 @@ export async function useCodexResetCredit(connection, options = {}, injectedDeps
     if (latest?.status === "confirmed" && !fallbackIdentityCanAdvance) {
       return { attempt: latest, state: "already_consumed", auto };
     }
-    if (options.respectSetting === true) {
-      const settings = await deps.getSettings();
-      if (!normalizeCodexResetAutoUseMinutes(settings.codexResetCreditAutoUseMinutes)) {
-        return { state: "disabled", auto: true };
-      }
+    if (options.respectSetting === true && !(await resetAutoUseStillEnabled(deps, currentConnection?.provider))) {
+      return { state: "disabled", auto: true };
     }
 
     const now = new Date(deps.now()).toISOString();
@@ -306,25 +302,37 @@ export async function runCodexResetCreditAutoUseTick(injectedDeps = null, state 
   state.running = true;
   try {
     const settings = await deps.getSettings();
-    const thresholdMinutes = normalizeCodexResetAutoUseMinutes(settings.codexResetCreditAutoUseMinutes);
-    if (!thresholdMinutes) return;
+    const groups = [
+      { provider: "codex", thresholdMinutes: normalizeCodexResetAutoUseMinutes(settings?.codexResetCreditAutoUseMinutes) },
+      { provider: "codex-backup", thresholdMinutes: normalizeCodexResetAutoUseMinutes(settings?.codexBackupResetCreditAutoUseMinutes) },
+    ].filter((group) => group.thresholdMinutes);
+    if (groups.length === 0) return;
 
-    const connections = await deps.getProviderConnections({ provider: "codex", isActive: true });
     const accounts = new Map();
-    for (const connection of connections) {
-      if (!["oauth", "access_token"].includes(connection.authType)) continue;
-      const identity = getCodexAccountIdentity(connection.providerSpecificData);
-      if (identity && !accounts.has(identity)) accounts.set(identity, connection);
+    for (const group of groups) {
+      const connections = await deps.getProviderConnections({ provider: group.provider, isActive: true });
+      for (const connection of connections) {
+        if (!["oauth", "access_token"].includes(connection.authType)) continue;
+        const identity = getCodexAccountIdentity(connection.providerSpecificData);
+        // One ChatGPT account is consumed once even when it is saved under both providers.
+        if (identity && !accounts.has(identity)) {
+          accounts.set(identity, { connection, thresholdMinutes: group.thresholdMinutes });
+        }
+      }
     }
     const targets = [...accounts.values()];
     let nextIndex = 0;
     async function runWorker() {
       while (nextIndex < targets.length) {
-        const connection = targets[nextIndex++];
+        const target = targets[nextIndex++];
         try {
-          await useCodexResetCredit(connection, { auto: true, thresholdMinutes, respectSetting: true }, deps, state);
+          await useCodexResetCredit(target.connection, {
+            auto: true,
+            thresholdMinutes: target.thresholdMinutes,
+            respectSetting: true,
+          }, deps, state);
         } catch (error) {
-          console.warn(`[Codex Reset Credits] ${connection.id}: ${error.message}`);
+          console.warn(`[Codex Reset Credits] ${target.connection.id}: ${error.message}`);
         }
       }
     }
@@ -351,6 +359,14 @@ export function stopCodexResetCreditAutoUse() {
 }
 
 export function configureCodexResetCreditAutoUse(settings) {
-  if (normalizeCodexResetAutoUseMinutes(settings?.codexResetCreditAutoUseMinutes)) startCodexResetCreditAutoUse();
+  const enabled = ["codex", "codex-backup"].some((provider) => (
+    normalizeCodexResetAutoUseMinutes(settings?.[codexResetAutoUseSettingsKey(provider)])
+  ));
+  if (enabled) startCodexResetCreditAutoUse();
   else stopCodexResetCreditAutoUse();
+}
+
+async function resetAutoUseStillEnabled(deps, provider) {
+  const settings = await deps.getSettings();
+  return normalizeCodexResetAutoUseMinutes(settings?.[codexResetAutoUseSettingsKey(provider)]) > 0;
 }

@@ -6,13 +6,14 @@ import {
   MAX_CODEX_RESET_AUTO_USE_MINUTES,
   useCodexResetCredit,
 } from "@/shared/services/codexResetCreditAutoUse";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 
 async function getCodexConnection(connectionId) {
   const connection = await getProviderConnectionById(connectionId);
   if (!connection) {
     return { response: Response.json({ error: "Connection not found" }, { status: 404 }) };
   }
-  if (connection.provider !== "codex") {
+  if (!isCodexFamilyProvider(connection.provider)) {
     return { response: Response.json({ error: "Codex reset credits are only available for Codex connections." }, { status: 400 }) };
   }
   if (!["oauth", "access_token"].includes(connection.authType)) {

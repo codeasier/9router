@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 
 // Providers using the dynamic-port local callback proxy.
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
@@ -26,7 +27,7 @@ function traePaste(site) {
 const PASTE_TOKEN_PROVIDERS = {
   trae: traePaste("www.trae.cn"),
   "trae-global": traePaste("www.trae.ai"),
-  "trae-enterprise": traePaste("www.trae.cn"),
+  "trae-enterprise": traePaste("console.enterprise.trae.cn"),
   windsurf: {
     label: "Windsurf API key",
     instructions:
@@ -243,8 +244,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       return;
     }
     // 3. Register the session so the proxy can match the incoming callback.
-    //    Zed also passes code_verifier (encodes the RSA private key for decrypt)
-    //    + systemId; sent via POST body so secrets never land in URL/query logs.
+    //    Zed's private key and the Trae enterprise PKCE verifier go in the POST
+    //    body so they never land in the URL or proxy logs.
     const regBody = { state: authData.state };
     if (authData.codeVerifier) regBody.codeVerifier = authData.codeVerifier;
     if (authData.systemId) regBody.systemId = authData.systemId;
@@ -369,7 +370,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Authorization code flow - build redirect URI (some providers require fixed ports)
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
       let redirectUri;
-      if (provider === "codex") {
+      if (isCodexFamilyProvider(provider)) {
         redirectUri = "http://localhost:1455/auth/callback";
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
@@ -390,9 +391,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Codex: start proxy with server-side session (auto-exchange) + fallback to channels
       let codexProxyActive = false;
       let codexServerSide = false;
-      if (provider === "codex") {
+      if (isCodexFamilyProvider(provider)) {
         try {
-          const proxyUrl = new URL(`/api/oauth/codex/start-proxy`, window.location.origin);
+          const proxyUrl = new URL(`/api/oauth/${provider}/start-proxy`, window.location.origin);
           proxyUrl.searchParams.set("app_port", appPort);
           proxyUrl.searchParams.set("state", data.state);
           proxyUrl.searchParams.set("code_verifier", data.codeVerifier);
@@ -429,11 +430,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         }
       }
 
-      setAuthData({ ...data, redirectUri, codexServerSide, xaiServerSide });
+      setAuthData({ ...data, redirectUri, codexServerSide, xaiServerSide, oauthProvider: provider });
 
       // Take ownership of server-side proxies so close stops them exactly once
       // (replaces the per-provider stop branches; same behavior, one ledger).
-      if ((provider === "codex" && codexProxyActive) || (provider === "xai" && xaiProxyActive)) {
+      if ((isCodexFamilyProvider(provider) && codexProxyActive) || (provider === "xai" && xaiProxyActive)) {
         flowRef.current.proxyStarted = true;
         flowRef.current.proxyProvider = provider;
         flowRef.current.stopSent = false;
@@ -450,7 +451,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         throw new Error("No authorization URL returned from OAuth provider");
       }
 
-      if (provider === "codex" && codexProxyActive) {
+      if (isCodexFamilyProvider(provider) && codexProxyActive) {
         // Proxy active: callback will be handled server-side (auto-exchange) or via channels (fallback)
         setStep("waiting");
         popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
@@ -463,7 +464,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         if (!popupRef.current) {
           setStep("input");
         }
-      } else if (!isLocalhost || provider === "codex" || provider === "xai") {
+      } else if (!isLocalhost || isCodexFamilyProvider(provider) || provider === "xai") {
         // Non-localhost or proxy failed: manual input mode
         setStep("input");
         window.open(data.authUrl, "_blank");
@@ -533,7 +534,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   // poll status until the proxy auto-exchanges and saves the connection.
   useEffect(() => {
     const pollProvider = authData?.codexServerSide
-      ? "codex"
+      ? (authData.oauthProvider || "codex")
       : authData?.xaiServerSide
         ? "xai"
         : authData?.proxyProvider

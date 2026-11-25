@@ -6,6 +6,7 @@ import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/c
 import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 
 export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
@@ -34,7 +35,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     if (activeModes.length > 0) {
       return `Auto-ping active: ${activeModes.join(" + ")}. Click to configure.`;
     }
-    return autoPing.provider === "codex"
+    return isCodexFamilyProvider(autoPing.provider)
       ? "Auto-starts the next 5h Codex window after reset or on schedule. Click to configure."
       : "Auto-starts a new window on quota reset or fixed schedule. Click to configure.";
   })();

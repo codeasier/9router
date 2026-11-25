@@ -35,6 +35,7 @@ import {
   DEPLETED_QUOTA_THRESHOLD,
   AUTO_REFRESH_STORAGE_KEY,
   DEFAULT_CODEX_RESET_AUTO_USE_MINUTES,
+  codexResetAutoUseSettingsKey,
   normalizeCodexResetAutoUseMinutes,
   CONNECTIONS_PAGE_SIZE,
   ACCOUNT_PAGE_SIZE_OPTIONS,
@@ -46,13 +47,22 @@ import Card from "@/shared/components/Card";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
 import AutoPingScheduleModal from "@/app/(dashboard)/dashboard/providers/[id]/AutoPingScheduleModal";
 import { USAGE_SUPPORTED_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import VolceapiLimitsEditor from "./VolceapiLimitsEditor";
 
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
   codex: "codexAutoPing",
+  "codex-backup": "codexBackupAutoPing",
 };
+
+const EMPTY_RESET_AUTO_USE_MINUTES = { codex: 0, "codex-backup": 0 };
+
+function defaultResetAutoUseInput() {
+  const fallback = String(DEFAULT_CODEX_RESET_AUTO_USE_MINUTES);
+  return { codex: fallback, "codex-backup": fallback };
+}
 
 
 function formatVolceShare(value) {
@@ -287,10 +297,10 @@ export default function ProviderLimits() {
   const [loading, setLoading] = useState({});
   const [errors, setErrors] = useState({});
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [autoPingConfigs, setAutoPingConfigs] = useState({ claude: {}, codex: {} });
+  const [autoPingConfigs, setAutoPingConfigs] = useState({ claude: {}, codex: {}, "codex-backup": {} });
   const [scheduleConnection, setScheduleConnection] = useState(null);
-  const [codexResetAutoUseMinutes, setCodexResetAutoUseMinutes] = useState(0);
-  const [codexResetAutoUseInput, setCodexResetAutoUseInput] = useState(String(DEFAULT_CODEX_RESET_AUTO_USE_MINUTES));
+  const [resetAutoUseMinutesByProvider, setResetAutoUseMinutesByProvider] = useState(EMPTY_RESET_AUTO_USE_MINUTES);
+  const [resetAutoUseInputByProvider, setResetAutoUseInputByProvider] = useState(defaultResetAutoUseInput);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [hasHydratedAutoRefresh, setHasHydratedAutoRefresh] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -310,6 +320,13 @@ export default function ProviderLimits() {
   const [providerFilter, _setProviderFilter] = useState(
     () => searchParams?.get("provider") || "all"
   );
+  const resetAutoUseProvider = isCodexFamilyProvider(providerFilter) ? providerFilter : null;
+  const codexResetAutoUseMinutes = resetAutoUseProvider
+    ? (resetAutoUseMinutesByProvider[resetAutoUseProvider] || 0)
+    : 0;
+  const codexResetAutoUseInput = resetAutoUseProvider
+    ? (resetAutoUseInputByProvider[resetAutoUseProvider] || String(DEFAULT_CODEX_RESET_AUTO_USE_MINUTES))
+    : String(DEFAULT_CODEX_RESET_AUTO_USE_MINUTES);
   // Wrapper: keeps URL in sync with the selected provider so the view can be
   // bookmarked. Replaces the URL without adding to browser history.
   const setProviderFilter = useCallback((value) => {
@@ -529,7 +546,7 @@ export default function ProviderLimits() {
 
   const handleResetCodexLimit = useCallback(
     async (connectionId, provider) => {
-      if ((provider !== "codex" && provider !== "claude") || resettingLimitId) return;
+      if ((!isCodexFamilyProvider(provider) && provider !== "claude") || resettingLimitId) return;
 
       setResettingLimitId(connectionId);
       setErrors((prev) => ({ ...prev, [connectionId]: null }));
@@ -783,31 +800,37 @@ export default function ProviderLimits() {
         setAutoPingConfigs({
           claude: s?.claudeAutoPing || {},
           codex: s?.codexAutoPing || {},
+          "codex-backup": s?.codexBackupAutoPing || {},
         });
         setQuotaVisibility(s?.quotaVisibility || {});
-        const minutes = normalizeCodexResetAutoUseMinutes(s?.codexResetCreditAutoUseMinutes);
-        setCodexResetAutoUseMinutes(minutes);
-        setCodexResetAutoUseInput(String(minutes || DEFAULT_CODEX_RESET_AUTO_USE_MINUTES));
+        const codexMinutes = normalizeCodexResetAutoUseMinutes(s?.codexResetCreditAutoUseMinutes);
+        const backupMinutes = normalizeCodexResetAutoUseMinutes(s?.codexBackupResetCreditAutoUseMinutes);
+        setResetAutoUseMinutesByProvider({ codex: codexMinutes, "codex-backup": backupMinutes });
+        setResetAutoUseInputByProvider({
+          codex: String(codexMinutes || DEFAULT_CODEX_RESET_AUTO_USE_MINUTES),
+          "codex-backup": String(backupMinutes || DEFAULT_CODEX_RESET_AUTO_USE_MINUTES),
+        });
       })
       .catch(() => {});
   }, []);
 
-  const updateCodexResetAutoUse = useCallback(async (minutes) => {
+  const updateCodexResetAutoUse = useCallback(async (provider, minutes) => {
+    const settingsKey = codexResetAutoUseSettingsKey(provider);
     const normalized = normalizeCodexResetAutoUseMinutes(minutes);
-    const previous = codexResetAutoUseMinutes;
-    setCodexResetAutoUseMinutes(normalized);
+    const previous = resetAutoUseMinutesByProvider[provider] || 0;
+    setResetAutoUseMinutesByProvider((current) => ({ ...current, [provider]: normalized }));
     try {
       const response = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codexResetCreditAutoUseMinutes: normalized }),
+        body: JSON.stringify({ [settingsKey]: normalized }),
       });
       if (!response.ok) throw new Error("Failed to update Codex reset-credit auto-use");
     } catch (error) {
       console.error("Error updating Codex reset-credit auto-use:", error);
-      setCodexResetAutoUseMinutes(previous);
+      setResetAutoUseMinutesByProvider((current) => ({ ...current, [provider]: previous }));
     }
-  }, [codexResetAutoUseMinutes]);
+  }, [resetAutoUseMinutesByProvider]);
 
   const handleSaveAutoPing = useCallback(async (connectionId, provider, { reactive, schedule }) => {
     const settingsKey = AUTO_PING_SETTINGS_KEYS[provider];
@@ -1271,7 +1294,7 @@ export default function ProviderLimits() {
             ))}
           </select>
 
-          {providerFilter === "codex" && (
+          {isCodexFamilyProvider(providerFilter) && (
             <>
               <select
                 value={quotaSortMode}
@@ -1293,12 +1316,12 @@ export default function ProviderLimits() {
                   type="button"
                   onClick={() => {
                     if (codexResetAutoUseMinutes > 0) {
-                      updateCodexResetAutoUse(0);
+                      updateCodexResetAutoUse(providerFilter, 0);
                     } else {
                       const minutes = normalizeCodexResetAutoUseMinutes(codexResetAutoUseInput)
                         || DEFAULT_CODEX_RESET_AUTO_USE_MINUTES;
-                      setCodexResetAutoUseInput(String(minutes));
-                      updateCodexResetAutoUse(minutes);
+                      setResetAutoUseInputByProvider((current) => ({ ...current, [providerFilter]: String(minutes) }));
+                      updateCodexResetAutoUse(providerFilter, minutes);
                     }
                   }}
                   className="flex items-center gap-1"
@@ -1318,12 +1341,15 @@ export default function ProviderLimits() {
                       max="10080"
                       step="1"
                       value={codexResetAutoUseInput}
-                      onChange={(event) => setCodexResetAutoUseInput(event.target.value)}
+                      onChange={(event) => setResetAutoUseInputByProvider((current) => ({
+                        ...current,
+                        [providerFilter]: event.target.value,
+                      }))}
                       onBlur={() => {
                         const minutes = normalizeCodexResetAutoUseMinutes(codexResetAutoUseInput)
                           || DEFAULT_CODEX_RESET_AUTO_USE_MINUTES;
-                        setCodexResetAutoUseInput(String(minutes));
-                        updateCodexResetAutoUse(minutes);
+                        setResetAutoUseInputByProvider((current) => ({ ...current, [providerFilter]: String(minutes) }));
+                        updateCodexResetAutoUse(providerFilter, minutes);
                       }}
                       className="h-6 w-12 rounded border border-primary/20 bg-transparent px-1 text-right text-xs tabular-nums outline-none"
                       aria-label="Minutes before Codex reset credit expiry"

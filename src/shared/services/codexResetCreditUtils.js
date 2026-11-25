@@ -7,6 +7,14 @@ export function normalizeCodexResetAutoUseMinutes(value) {
   return Math.min(MAX_CODEX_RESET_AUTO_USE_MINUTES, Math.max(1, Math.round(parsed)));
 }
 
+// Each Codex pool has its own auto-use threshold. The backup must not read the
+// original key, or enabling it would also spend credits on Codex accounts.
+export function codexResetAutoUseSettingsKey(provider) {
+  return provider === "codex-backup"
+    ? "codexBackupResetCreditAutoUseMinutes"
+    : "codexResetCreditAutoUseMinutes";
+}
+
 export function findExpiringCodexResetCredit(result, thresholdMinutes, now = Date.now()) {
   if (!result || result.availableCount <= 0) return null;
   const thresholdMs = thresholdMinutes * 60 * 1000;

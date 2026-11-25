@@ -3,6 +3,7 @@ import REGISTRY from "../providers/registry/index.js";
 import { PROVIDER_MODELS } from "../providers/index.js";
 import { modelQuotaFamily, modelStrip, modelTargetFormat, modelSupportedFormats, modelParams, modelThinking, normalizeModelId } from "../providers/models/schema.js";
 import { CODEX_REVIEW_SUFFIX, isMuseSparkModel, opencodeFamilyFormats } from "../providers/models/helpers.js";
+import { codexCatalogAlias } from "../providers/codexFamily.js";
 import { FORMATS } from "../translator/formats.js";
 import { findCustomModelFormats } from "./customModelFormats.js";
 export { PROVIDER_MODELS };
@@ -186,7 +187,7 @@ export function getModelUpstreamId(aliasOrId, modelId, clientBody = null) {
     const resolvedBase = presetSuffix ? resolvedId.slice(0, presetMatch.index).trim() : resolvedId;
     return resolvedBase + (suffix || (presetSuffix && tier ? `(${tier})` : presetSuffix));
   }
-  if (aliasOrId === "cx" && typeof baseId === "string" && baseId.endsWith(CODEX_REVIEW_SUFFIX)) {
+  if (codexCatalogAlias(aliasOrId) && typeof baseId === "string" && baseId.endsWith(CODEX_REVIEW_SUFFIX)) {
     return baseId.slice(0, -CODEX_REVIEW_SUFFIX.length) + suffix;
   }
   return baseId + suffix;

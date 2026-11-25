@@ -8,7 +8,7 @@ import {
 import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
 import { RESPONSES_ITEM } from "../translator/schema/index.js";
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
-import { getModelUpstreamId, getModelMeta } from "../config/providerModels.js";
+import { getModelUpstreamId, getModelMeta, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import { CHAT_BUILD_TIMEOUT_MS, DEFAULT_RETRY_CONFIG, HTTP_STATUS, resolveRetryEntry } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
@@ -38,17 +38,17 @@ const CODEX_SSE_USER_OUTPUT_PATTERNS = [
 ];
 const CODEX_SSE_PEEK_BYTES = 256 * 1024;
 const CODEX_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
-function isCodexResponsesLiteModel(model) {
-  const entry = getModelMeta("cx", model);
+function isCodexResponsesLiteModel(model, alias = "cx") {
+  const entry = getModelMeta(alias, model);
   // An alias can explicitly opt out even when its upstream model defaults to Lite.
-  return (entry?.responsesLite ?? getModelMeta("cx", getModelUpstreamId("cx", model))?.responsesLite) === true;
+  return (entry?.responsesLite ?? getModelMeta(alias, getModelUpstreamId(alias, model))?.responsesLite) === true;
 }
 
 // Shared by body and header generation; never infer transport from the rewritten
 // body.model alone, since chatCore has already resolved aliases to upstream ids.
-function usesCodexResponsesLite(model, body) {
+function usesCodexResponsesLite(model, body, alias = "cx") {
   const hasSearch = tools => tools?.some?.(tool => tool?.type === "web_search");
-  return isCodexResponsesLiteModel(model)
+  return isCodexResponsesLiteModel(model, alias)
     && !hasSearch(body?.tools)
     && !body?.input?.some?.(item => item?.type === "additional_tools" && hasSearch(item.tools));
 }
@@ -155,20 +155,20 @@ function normalizeCodexTools(body) {
 }
 
 // Resolve prompt-cache session id: client session → assistant-text-hash → workspaceId → connection
-function resolveCacheSessionId(body, credentials) {
+function resolveCacheSessionId(body, credentials, scope = "codex") {
   return resolveSessionId({
     headers: credentials?.rawHeaders,
     body,
     connectionId: credentials?.connectionId,
     workspaceId: credentials?.providerSpecificData?.workspaceId,
-    scope: "codex"
+    scope
   });
 }
 
-function normalizeReasoningEffort(model, value) {
-  const supportedLevels = getThinkingLevels("codex", model);
+function normalizeReasoningEffort(model, value, provider = "codex", alias = "cx") {
+  const supportedLevels = getThinkingLevels(provider, model);
   if (supportedLevels?.includes(value)) return value;
-  if (isCodexResponsesLiteModel(model) && (value === "none" || value === "minimal")) return "low";
+  if (isCodexResponsesLiteModel(model, alias) && (value === "none" || value === "minimal")) return "low";
   if (value === "ultra" && supportedLevels?.includes("max")) return "max";
   if (value === "max" || value === "ultra") return "xhigh";
   return value;
@@ -231,8 +231,9 @@ function codexSseErrorResponse(status, message) {
  * Automatically injects default instructions if missing
  */
 export class CodexExecutor extends BaseExecutor {
-  constructor() {
-    super("codex", PROVIDERS.codex);
+  constructor(providerId = "codex") {
+    super(providerId, PROVIDERS[providerId]);
+    this.modelAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
     this._currentSessionId = null;
   }
 
@@ -242,7 +243,7 @@ export class CodexExecutor extends BaseExecutor {
    */
   buildHeaders(credentials, stream = true, _url = null, model = null, body = null) {
     const headers = super.buildHeaders(credentials, stream);
-    if (usesCodexResponsesLite(model || body?.model, body)) {
+    if (usesCodexResponsesLite(model || body?.model, body, this.modelAlias)) {
       headers["x-openai-internal-codex-responses-lite"] = "true";
     }
     headers["session_id"] = this._currentSessionId || credentials?.connectionId || "default";
@@ -271,11 +272,11 @@ export class CodexExecutor extends BaseExecutor {
 
   async refreshCredentials(credentials, log) {
     if (!credentials?.refreshToken) return null;
-    return refreshProviderCredentials("codex", credentials, log);
+    return refreshProviderCredentials(this.provider, credentials, log);
   }
 
   needsRefresh(credentials) {
-    return shouldRefreshCredentials("codex", credentials);
+    return shouldRefreshCredentials(this.provider, credentials);
   }
 
   /**
@@ -515,7 +516,7 @@ export class CodexExecutor extends BaseExecutor {
     this._isCompact = !!body._compact;
     delete body._compact;
     // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
-    this._currentSessionId = resolveCacheSessionId(body, credentials);
+    this._currentSessionId = resolveCacheSessionId(body, credentials, this.provider);
     // Convert string input to array format (Codex API requires input as array)
     const normalized = normalizeResponsesInput(body.input);
     if (normalized) {
@@ -536,14 +537,14 @@ export class CodexExecutor extends BaseExecutor {
         return copy;
       });
     }
-    const upstreamModel = getModelUpstreamId("cx", body.model || model);
+    const upstreamModel = getModelUpstreamId(this.modelAlias, body.model || model);
     // Register hosted search before choosing transport; Lite cannot execute it.
     const autoWebSearch = body._autoCodexWebSearch === true;
     delete body._autoCodexWebSearch;
     if (autoWebSearch && !body.tools?.some?.(tool => tool?.type === "web_search")) {
       body.tools = [...(Array.isArray(body.tools) ? body.tools : []), { type: "web_search" }];
     }
-    const responsesLite = usesCodexResponsesLite(model || body.model, body);
+    const responsesLite = usesCodexResponsesLite(model || body.model, body, this.modelAlias);
     // Hosted search or an explicit alias can select regular Responses. Move any
     // native Lite tool prefix to the top level without duplicating definitions.
     let convertedLitePrefix = false;
@@ -629,10 +630,10 @@ export class CodexExecutor extends BaseExecutor {
 
     // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default (medium)
     if (!body.reasoning) {
-      const effort = normalizeReasoningEffort(body.model, body.reasoning_effort || modelEffort || (responsesLite ? 'medium' : 'low'));
+      const effort = normalizeReasoningEffort(body.model, body.reasoning_effort || modelEffort || (responsesLite ? 'medium' : 'low'), this.provider, this.modelAlias);
       body.reasoning = responsesLite ? { effort } : { effort, summary: "auto" };
     } else {
-      body.reasoning.effort = normalizeReasoningEffort(body.model, body.reasoning.effort);
+      body.reasoning.effort = normalizeReasoningEffort(body.model, body.reasoning.effort, this.provider, this.modelAlias);
       if (!responsesLite && !body.reasoning.summary) body.reasoning.summary = "auto";
     }
     if (responsesLite) body.reasoning.context = "all_turns";

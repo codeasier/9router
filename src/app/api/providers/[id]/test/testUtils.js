@@ -33,6 +33,7 @@ import {
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
 import { hasWebIdentityProbe, fetchWebIdentity } from "open-sse/services/webIdentity.js";
 import { mergeCustomHeaders } from "../../../../../../open-sse/utils/customHeaders.js";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -176,6 +177,8 @@ const OAUTH_TEST_CONFIG = {
     useApiKey: true,
   },
 };
+// Same probe as Codex. A null entry makes the test route say the provider is unsupported.
+OAUTH_TEST_CONFIG["codex-backup"] = OAUTH_TEST_CONFIG.codex;
 
 /**
  * Classify an OAuth probe response as success / soft-success / hard-fail.
@@ -288,7 +291,7 @@ async function refreshOAuthToken(connection) {
       return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
     }
 
-    if (provider === "codex" || provider === "grok-cli" || provider === "xai" || provider === "nous") {
+    if (isCodexFamilyProvider(provider) || provider === "grok-cli" || provider === "xai" || provider === "nous") {
       return await refreshProviderCredentials(provider, connection, console);
     }
 

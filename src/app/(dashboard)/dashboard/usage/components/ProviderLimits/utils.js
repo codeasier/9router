@@ -1,8 +1,10 @@
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { CODEX_QUOTA_WINDOWS } from "open-sse/config/codexQuota.js";
 import { VOLCEAPI_WINDOWS } from "open-sse/config/volceapi.js";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 export {
   DEFAULT_CODEX_RESET_AUTO_USE_MINUTES,
+  codexResetAutoUseSettingsKey,
   normalizeCodexResetAutoUseMinutes,
 } from "@/shared/services/codexResetCreditUtils.js";
 
@@ -104,7 +106,7 @@ export function sortVisibleConnections(
   providerFilter,
   quotaSortMode,
 ) {
-  if (providerFilter === "codex" && quotaSortMode !== "default") {
+  if (isCodexFamilyProvider(providerFilter) && quotaSortMode !== "default") {
     return [...connections].sort((a, b) => {
       const remainingA = getConnectionQuotaRemaining(a, quotaData);
       const remainingB = getConnectionQuotaRemaining(b, quotaData);
@@ -691,6 +693,7 @@ export function parseQuotaData(provider, data) {
         break;
 
       case "codex":
+      case "codex-backup":
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
             const family = quotaType.startsWith("spark_") ? "Spark" : quotaType.startsWith("review_") ? "Review" : null;

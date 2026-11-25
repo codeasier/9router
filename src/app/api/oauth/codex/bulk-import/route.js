@@ -27,6 +27,11 @@ export async function POST(request) {
     );
   }
 
+  // Only the two Codex lanes may be targeted. A pasted account object must
+  // not choose an arbitrary provider.
+  const requestedProvider = !Array.isArray(body) && body && typeof body === "object" ? body.provider : null;
+  const provider = requestedProvider === "codex-backup" ? "codex-backup" : "codex";
+
   // Normalize to array
   let accounts;
   if (Array.isArray(body)) {
@@ -104,9 +109,9 @@ export async function POST(request) {
       if (!item.lastRefreshAt) item.lastRefreshAt = new Date().toISOString();
 
       const created = await createProviderConnection({
-        provider: "codex",
         authType: "oauth",
         ...item,
+        provider,
       });
 
       results.push({ index: i, ok: true, id: created.id });

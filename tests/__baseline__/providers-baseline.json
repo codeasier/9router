@@ -221,6 +221,24 @@
     "clientId": "app_EMoamEEZ73f0CkXaXp7hrann",
     "tokenUrl": "https://auth.openai.com/oauth/token"
   },
+  "codex-backup": {
+    "baseUrl": "https://chatgpt.com/backend-api/codex/responses",
+    "format": "openai-responses",
+    "forceStream": true,
+    "cliVersion": "0.167.1",
+    "headers": {
+      "originator": "codex_cli_rs",
+      "User-Agent": "codex_cli_rs/0.167.1",
+      "version": "0.167.1"
+    },
+    "usage": {
+      "url": "https://chatgpt.com/backend-api/wham/usage",
+      "resetCreditsUrl": "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+      "resetCreditsConsumeUrl": "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+    },
+    "clientId": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "tokenUrl": "https://auth.openai.com/oauth/token"
+  },
   "cohere": {
     "baseUrl": "https://api.cohere.ai/v1/chat/completions",
     "validateUrl": "https://api.cohere.ai/v1/models",

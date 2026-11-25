@@ -23,7 +23,7 @@ function normalizeToArray(parsed) {
   return null;
 }
 
-export default function BulkImportCodexModal({ isOpen, onClose, onSuccess }) {
+export default function BulkImportCodexModal({ isOpen, onClose, onSuccess, providerId = "codex" }) {
   const [jsonText, setJsonText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [parseError, setParseError] = useState("");
@@ -63,7 +63,7 @@ export default function BulkImportCodexModal({ isOpen, onClose, onSuccess }) {
       const res = await fetch("/api/oauth/codex/bulk-import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accounts }),
+        body: JSON.stringify({ accounts, provider: providerId === "codex-backup" ? "codex-backup" : "codex" }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -147,4 +147,5 @@ BulkImportCodexModal.propTypes = {
   isOpen: PropTypes.bool.isRequired,
   onClose: PropTypes.func.isRequired,
   onSuccess: PropTypes.func,
+  providerId: PropTypes.string,
 };

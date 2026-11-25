@@ -13,6 +13,7 @@ import * as log from "../utils/logger.js";
 import { checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy.js";
 import { withKeyPolicy, checkProviderBudgetResponse } from "../services/keyPolicy.js";
+import { isCodexFamilyProvider } from "open-sse/providers/codexFamily.js";
 
 // Providers requiring credentials for STT
 const CREDENTIALED_PROVIDERS = new Set(
@@ -69,7 +70,10 @@ async function handleSttInner(request, formData, modelStr, apiKey) {
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
-  if (provider === "codex" && model !== "transcribe") return errorResponse(400, "Use model cx/transcribe for Codex STT");
+  if (isCodexFamilyProvider(provider) && model !== "transcribe") {
+    const alias = provider === "codex-backup" ? "cx-new" : "cx";
+    return errorResponse(400, `Use model ${alias}/transcribe for Codex STT`);
+  }
 
   // Per-key access control: checked before any credential lookup.
   const keyAccessDenied = await enforceKeyAccessResolved(await getKeyAccessContext(request), modelStr, provider, model);
@@ -111,7 +115,7 @@ async function handleSttInner(request, formData, modelStr, apiKey) {
 
     let result;
     try {
-      const isCodex = provider === "codex";
+      const isCodex = isCodexFamilyProvider(provider);
       if (isCodex) credentials = await checkAndRefreshToken(provider, credentials);
       const proxyOptions = isCodex
         ? await resolveConnectionProxyConfig(credentials._connection?.providerSpecificData || credentials.providerSpecificData)
@@ -133,7 +137,7 @@ async function handleSttInner(request, formData, modelStr, apiKey) {
 
     if (request.signal.aborted) return errorResponse(504, "Transcription cancelled");
     // Bad audio / unsupported parameters are client errors, not broken accounts.
-    if (provider === "codex" && [400, 413, 504].includes(result.status)) {
+    if (isCodexFamilyProvider(provider) && [400, 413, 504].includes(result.status)) {
       return result.response || errorResponse(result.status, result.error);
     }
 

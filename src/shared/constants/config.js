@@ -62,6 +62,21 @@ export const CONSOLE_LOG_CONFIG = {
 // Client-side store TTL: how long fetched data stays fresh before re-fetching
 export const CLIENT_STORE_TTL_MS = 60000;
 
+// Shared by Codex and Codex Backup. The settings key stays per provider so one
+// pool's ping toggle cannot warm the other account.
+const CODEX_AUTOPING = {
+  quotaKey: "session",
+  pingWhenResetAtSlides: true,
+  resetAtDriftMs: 30000,
+  minPingIntervalMs: 600000,
+  skipWhenBlockingQuotaExhausted: true,
+  // gpt-5.6-terra is the lightweight model for auto-pinging Codex 5h reset window.
+  pingModel: "gpt-5.6-terra",
+  pingText: "hi",
+  pingInstructions: "Reply with OK.",
+  pingReasoningEffort: "none",
+};
+
 // Quota auto-ping: keep 5h windows warm by sending a tiny request right after reset.
 export const QUOTA_AUTOPING_CONFIG = {
   tickIntervalMs: 60000,                // scheduler tick
@@ -78,16 +93,11 @@ export const QUOTA_AUTOPING_CONFIG = {
     },
     codex: {
       settingsKey: "codexAutoPing",
-      quotaKey: "session",
-      pingWhenResetAtSlides: true,
-      resetAtDriftMs: 30000,
-      minPingIntervalMs: 600000,
-      skipWhenBlockingQuotaExhausted: true,
-      // gpt-5.6-terra is the lightweight model for auto-pinging Codex 5h reset window.
-      pingModel: "gpt-5.6-terra",
-      pingText: "hi",
-      pingInstructions: "Reply with OK.",
-      pingReasoningEffort: "none",
+      ...CODEX_AUTOPING,
+    },
+    "codex-backup": {
+      settingsKey: "codexBackupAutoPing",
+      ...CODEX_AUTOPING,
     },
   },
 };

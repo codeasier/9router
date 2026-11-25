@@ -166,7 +166,7 @@ export async function createProviderConnection(data) {
         // existing bare-email row overwrites the first account's token pair and
         // makes it look "invalid" after adding a second account. Only update an
         // existing Codex row when both rows expose the same ChatGPT account ID.
-        if (data.provider === "codex") {
+        if (data.provider === "codex" || data.provider === "codex-backup") {
           const existingWs = c.providerSpecificData?.chatgptAccountId;
           return !!incomingWs && !!existingWs && incomingWs === existingWs;
         }

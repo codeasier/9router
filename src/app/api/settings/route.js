@@ -13,6 +13,18 @@ const SETTINGS_RESPONSE_HEADERS = {
 
 // Secrets must never be mass-assigned from request body (CWE-915)
 const PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"];
+const CODEX_RESET_AUTO_USE_KEYS = ["codexResetCreditAutoUseMinutes", "codexBackupResetCreditAutoUseMinutes"];
+const QUOTA_AUTO_PING_KEYS = ["claudeAutoPing", "codexAutoPing", "codexBackupAutoPing"];
+
+function assignResetAutoUseMinutes(body, key) {
+  if (!Object.prototype.hasOwnProperty.call(body, key)) return null;
+  const value = Number(body[key]);
+  if (!Number.isFinite(value) || value < 0 || value > 10080) {
+    return `${key} must be between 0 and 10080.`;
+  }
+  body[key] = value === 0 ? 0 : Math.max(1, Math.round(value));
+  return null;
+}
 
 export async function GET() {
   try {
@@ -42,12 +54,9 @@ export async function PATCH(request) {
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
 
-    if (Object.prototype.hasOwnProperty.call(body, "codexResetCreditAutoUseMinutes")) {
-      const value = Number(body.codexResetCreditAutoUseMinutes);
-      if (!Number.isFinite(value) || value < 0 || value > 10080) {
-        return NextResponse.json({ error: "codexResetCreditAutoUseMinutes must be between 0 and 10080." }, { status: 400 });
-      }
-      body.codexResetCreditAutoUseMinutes = value === 0 ? 0 : Math.max(1, Math.round(value));
+    for (const key of CODEX_RESET_AUTO_USE_KEYS) {
+      const error = assignResetAutoUseMinutes(body, key);
+      if (error) return NextResponse.json({ error }, { status: 400 });
     }
 
     // If updating password, hash it
@@ -104,10 +113,7 @@ export async function PATCH(request) {
       resetComboRotation();
     }
 
-    if (
-      Object.prototype.hasOwnProperty.call(body, "claudeAutoPing") ||
-      Object.prototype.hasOwnProperty.call(body, "codexAutoPing")
-    ) {
+    if (QUOTA_AUTO_PING_KEYS.some((key) => Object.prototype.hasOwnProperty.call(body, key))) {
       // Keep the scheduler absent when no account opted in; load its provider graph only on demand.
       import("@/shared/services/quotaAutoPing")
         .then(({ configureQuotaAutoPing }) => {
@@ -116,7 +122,7 @@ export async function PATCH(request) {
         .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
     }
 
-    if (Object.prototype.hasOwnProperty.call(body, "codexResetCreditAutoUseMinutes")) {
+    if (CODEX_RESET_AUTO_USE_KEYS.some((key) => Object.prototype.hasOwnProperty.call(body, key))) {
       import("@/shared/services/codexResetCreditAutoUse")
         .then(({ configureCodexResetCreditAutoUse }) => configureCodexResetCreditAutoUse(settings))
         .catch((error) => console.warn("[Codex Reset Credits] settings update failed:", error.message));

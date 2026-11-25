@@ -18,7 +18,7 @@ const SPECIAL_CRED = {
 // They are locked separately in the 11-provider edge tests / dedicated unit tests.
 const SPECIALIZED = new Set([
   "antigravity", "azure", "gemini-cli", "github", "iflow", "qoder", "kiro",
-  "codex", "cursor", "vertex", "vertex-partner", "opencode",
+  "codex", "codex-backup", "cursor", "vertex", "vertex-partner", "opencode",
   "opencode-go", "volceapi", "grok-web", "perplexity-web", "ollama-local", "commandcode",
   "xiaomi-tokenplan", "mimo-free",
   "trae", "trae-global", "trae-enterprise",

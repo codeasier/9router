@@ -160,7 +160,7 @@ export async function GET(request, { params }) {
         const result = await startXiaomiMimoProxy();
         return NextResponse.json(result);
       }
-      if (!["codex", "xai"].includes(provider)) {
+      if (!["codex", "codex-backup", "xai"].includes(provider)) {
         return NextResponse.json({ error: "Proxy only supported for codex/xai/trae/windsurf/zed" }, { status: 400 });
       }
       const appPort = searchParams.get("app_port");
@@ -177,7 +177,7 @@ export async function GET(request, { params }) {
       if (result.success && state && codeVerifier && redirectUri) {
         serverSide = provider === "xai"
           ? registerXaiSession({ state, codeVerifier, redirectUri })
-          : registerCodexSession({ state, codeVerifier, redirectUri });
+          : registerCodexSession({ state, codeVerifier, redirectUri, provider });
       }
       return NextResponse.json({ ...result, serverSide });
     }
@@ -192,7 +192,7 @@ export async function GET(request, { params }) {
       else if (provider === "windsurf") session = getWindsurfSessionStatus(state);
       else if (provider === "zed") session = getZedSessionStatus(state);
       else if (provider === "xai") session = getXaiSessionStatus(state);
-      else if (provider === "codex") session = getCodexSessionStatus(state);
+      else if (provider === "codex" || provider === "codex-backup") session = getCodexSessionStatus(state);
       else if (provider === "xiaomi-mimo") session = getXiaomiMimoSessionStatus(state);
       else return NextResponse.json({ error: "Poll only supported for codex/xai/trae/windsurf/zed/xiaomi-mimo" }, { status: 400 });
       if (!session) return NextResponse.json({ status: "unknown" });
@@ -208,8 +208,10 @@ export async function GET(request, { params }) {
           }
           return NextResponse.json(payload);
         }
-        if (isTraeOAuthProvider(provider)) clearTraeSession(state, provider);
-        else if (provider === "windsurf") clearWindsurfSession(state);
+        if (isTraeOAuthProvider(provider)) {
+          clearTraeSession(state, provider);
+          delete payload.codeVerifier;
+        } else if (provider === "windsurf") clearWindsurfSession(state);
         else if (provider === "zed") clearZedSession(state);
         else if (provider === "xai") clearXaiSession(state);
         else clearCodexSession(state);
@@ -223,7 +225,7 @@ export async function GET(request, { params }) {
       else if (provider === "windsurf") stopWindsurfProxy();
       else if (provider === "zed") stopZedProxy();
       else if (provider === "xai") stopXaiProxy();
-      else if (provider === "codex") stopCodexProxy();
+      else if (provider === "codex" || provider === "codex-backup") stopCodexProxy();
       else if (provider === "xiaomi-mimo") stopXiaomiMimoProxy();
       else return NextResponse.json({ error: "Proxy only supported for codex/xai/trae/windsurf/zed/xiaomi-mimo" }, { status: 400 });
       return NextResponse.json({ success: true });
@@ -367,12 +369,13 @@ export async function POST(request, { params }) {
 
     if (action === "register-session") {
       // Register proxy session out of URL query (state) + body (codeVerifier).
-      // Zed's codeVerifier encodes the RSA private key — must stay out of URL/logs.
+      // Zed's codeVerifier encodes the RSA private key. Trae enterprise's is the
+      // PKCE verifier. Both stay in the POST body, never in the URL or logs.
       const searchParams = new URL(request.url).searchParams;
       const state = searchParams.get("state") || body?.state;
       if (!state) return NextResponse.json({ error: "Missing state" }, { status: 400 });
       let ok = false;
-      if (isTraeOAuthProvider(provider)) ok = registerTraeSession({ state, provider });
+      if (isTraeOAuthProvider(provider)) ok = registerTraeSession({ state, provider, codeVerifier: body?.codeVerifier });
       else if (provider === "windsurf") ok = registerWindsurfSession({ state });
       else if (provider === "zed") ok = registerZedSession({ state, codeVerifier: body?.codeVerifier, systemId: body?.systemId });
       else return NextResponse.json({ error: "register-session only supported for trae/windsurf/zed" }, { status: 400 });
