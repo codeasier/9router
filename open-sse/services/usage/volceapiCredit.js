@@ -4,6 +4,7 @@ import {
   VOLCEAPI_DEFAULT_LIMITS,
   VOLCEAPI_TIMEZONE,
 } from "../../config/volceapi.js";
+import { toFiniteNumber } from "./shared.js";
 
 export function resolveVolceapiLimits(providerSpecificData) {
   const raw = providerSpecificData?.quotaLimits;
@@ -108,6 +109,53 @@ export function estimateModelCredit(modelUsage, modelMeta) {
     credit += tokens * coefficient / VOLCEAPI_CREDIT_PER_MILLION;
   }
   return { credit: roundCredit(credit), complete: true };
+}
+
+/**
+ * Upstream-computed credit for one by-model row.
+ *
+ * The gateway bills input, cached and output tokens at different rates and
+ * returns the result itself: `daily[].credit` per day and `credit` per row.
+ * Prefer those numbers. One catalog coefficient cannot describe a model that
+ * several upstreams serve at different prices — the catalog now lists
+ * `volcengine/deepseek-v4.1-flash` (0.15) and `baidu/deepseek-v4.1-flash` (0.2)
+ * separately while `/usage/by-model` still aggregates them under the bare id —
+ * and multiplying total tokens by a single rate ignores the cached-token
+ * discount.
+ */
+export function resolveModelCredit(modelUsage, modelMeta) {
+  const dailyCredit = sumDailyCredit(modelUsage);
+  if (dailyCredit != null) {
+    return { credit: dailyCredit, complete: true, source: "upstream-daily" };
+  }
+  const rowCredit = toFiniteNumber(modelUsage?.credit, NaN);
+  if (Number.isFinite(rowCredit)) {
+    return { credit: roundCredit(rowCredit), complete: true, source: "upstream-total" };
+  }
+  return { ...estimateModelCredit(modelUsage, modelMeta), source: "coefficient" };
+}
+
+/**
+ * Sum the per-day credit the gateway reports. Returns null when a day that
+ * consumed tokens carries no credit figure, so the caller can fall back to the
+ * coefficient estimate instead of silently under-reporting the window.
+ */
+function sumDailyCredit(modelUsage) {
+  const daily = Array.isArray(modelUsage?.daily) ? modelUsage.daily : [];
+  if (!daily.length) return null;
+  let credit = 0;
+  for (const day of daily) {
+    const dayCredit = toFiniteNumber(day?.credit, NaN);
+    if (Number.isFinite(dayCredit)) {
+      credit += dayCredit;
+      continue;
+    }
+    // Dense week/month series include unused days as 0; those cost nothing and
+    // may predate the credit history.
+    if (toFiniteNumber(day?.total_tokens, 0) === 0) continue;
+    return null;
+  }
+  return roundCredit(credit);
 }
 
 export function modelMetaLookupKeys(modelId) {

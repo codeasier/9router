@@ -11,6 +11,7 @@ import {
   findModelMeta,
   indexModelsById,
   resolveCreditCoefficient,
+  resolveModelCredit,
   resolveVolceapiLimits,
 } from "../../open-sse/services/usage/volceapiCredit.js";
 import { VOLCEAPI_API_ROOT, VOLCEAPI_DEFAULT_LIMITS } from "../../open-sse/config/volceapi.js";
@@ -138,6 +139,36 @@ describe("volceapi credit math", () => {
     }, findModelMeta(index, "glm-5-3-260814"))).toEqual({ credit: 2.77, complete: true });
   });
 
+  it("prefers the credit the gateway reports per day over the catalog coefficient", () => {
+    // The catalog prices this model per upstream and no longer carries the bare
+    // id that /usage/by-model aggregates under.
+    expect(resolveModelCredit({
+      model: "deepseek-v4.1-flash",
+      daily: [
+        { date: "2026-11-25", total_tokens: 216_612_290, credit: 17.251386804 },
+        { date: "2026-11-26", total_tokens: 1_312_560, credit: 0.247852044 },
+      ],
+    }, { credit: 0.15 })).toEqual({ credit: 17.4992, complete: true, source: "upstream-daily" });
+  });
+
+  it("falls back to the row credit, then to the coefficient estimate", () => {
+    expect(resolveModelCredit({ total_tokens: 6_020_529, credit: 7.5 }, null))
+      .toEqual({ credit: 7.5, complete: true, source: "upstream-total" });
+    expect(resolveModelCredit(
+      { daily: [{ date: "2026-09-16", total_tokens: 1_000_000 }] },
+      { credit: 4.51 },
+    )).toEqual({ credit: 4.51, complete: true, source: "coefficient" });
+  });
+
+  it("never sums a daily series with a missing credit figure for a used day", () => {
+    expect(resolveModelCredit({
+      daily: [
+        { date: "2026-11-25", total_tokens: 1000, credit: 1 },
+        { date: "2026-11-26", total_tokens: 2000 },
+      ],
+    }, null)).toMatchObject({ complete: false, source: "coefficient" });
+  });
+
   it("marks missing model metadata or daily rows incomplete instead of zero", () => {
     expect(estimateModelCredit({ daily: [] }, MODELS.data[0])).toMatchObject({ complete: false });
     expect(estimateModelCredit({ daily: [{ date: "2026-09-16", total_tokens: 1000 }] }, null)).toMatchObject({ complete: false });
@@ -202,6 +233,48 @@ describe("getUsageForProvider(volceapi)", () => {
     expect(usage.details.estimateComplete).toBe(false);
     expect(usage.note).toMatch(/incomplete/i);
     expect(usage.message).toBeUndefined();
+  });
+
+  it("keeps windows complete when the catalog only prices vendor-prefixed ids", async () => {
+    mockUsageApis({
+      // Live shape: /v1/models lists volcengine/…, baidu/…, dashscope/… and
+      // tencent/… at different coefficients; /usage/by-model still aggregates
+      // them under the bare id, so a coefficient lookup cannot resolve one.
+      models: {
+        object: "list",
+        data: [
+          { id: "volcengine/deepseek-v4.1-flash", credit: 0.15, credit_history: [{ from: "2026-11-03", credit: 0.15 }] },
+          { id: "baidu/deepseek-v4.1-flash", credit: 0.2, credit_history: [{ from: "2026-11-19", credit: 0.2 }] },
+        ],
+      },
+      byModel: {
+        object: "list",
+        window: "today",
+        data: [{
+          model: "deepseek-v4.1-flash",
+          total_tokens: 1_312_560,
+          request_count: 5,
+          share: 1,
+          daily: [{ date: "2026-09-16", total_tokens: 1_312_560, credit: 0.247852044 }],
+        }],
+      },
+    });
+
+    const usage = await getUsageForProvider({ provider: "volceapi", apiKey: "sk-volce" });
+    expect(usage.quotas["Credits (today)"]).toMatchObject({
+      used: 0.2479,
+      total: 150,
+      remainingPercentage: 100,
+    });
+    expect(usage.quotas["Credits (today)"].incomplete).toBeUndefined();
+    expect(usage.details.byModel.today[0]).toMatchObject({
+      model: "deepseek-v4.1-flash",
+      credit: 0.2479,
+      creditComplete: true,
+    });
+    expect(usage.details.windows.today.creditComplete).toBe(true);
+    expect(usage.details.windows.today.incompleteReasons).toEqual([]);
+    expect(usage.note).not.toMatch(/incomplete/i);
   });
 
   it("completes month credits when daily zeros precede history and dated ids alias", async () => {
